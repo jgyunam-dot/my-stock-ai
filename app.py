@@ -164,7 +164,7 @@ else:
                 my_portfolio_str = "\n".join(portfolio_lines) if portfolio_lines else "포트폴리오 없음"
 
                 # [3단계] Gemini AI 분석
-                genai.configure(api_key=st.session_state.api_key)  # ✅ session_state에서 사용
+                genai.configure(api_key=MY_API_KEY)  # ✅ session_state에서 사용
                 model = genai.GenerativeModel('gemini-2.5-flash')
 
                 prompt = f"""
