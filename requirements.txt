@@ -3,3 +3,4 @@ yfinance
 google-generativeai
 pytz
 pandas
+PyGithub
