@@ -5,6 +5,7 @@ from datetime import datetime
 import pytz
 import pandas as pd
 import json
+import re
 from github import Github
 
 # ==========================================
@@ -112,9 +113,9 @@ else:
             num_rows="dynamic",
             use_container_width=True,
             key="portfolio_editor",
-            on_change=auto_save  # ← 수정할 때마다 자동 저장
+            on_change=auto_save
         )
-        st.caption("✏️ 수정 후 자동 저장됩니다")
+        st.caption("✏️ 수정 후 키보드 완료 버튼 또는 다른 셀 터치 시 자동 저장됩니다")
 
     st.markdown("---")
 
@@ -138,7 +139,6 @@ else:
                     try:
                         t = yf.Ticker(ticker)
                         data = t.history(period="5d").dropna()
-
                         if len(data) >= 2:
                             prev = data["Close"].iloc[-2]
                             curr = data["Close"].iloc[-1]
@@ -190,12 +190,58 @@ else:
                 my_portfolio_str = "\n".join(portfolio_lines) if portfolio_lines else "포트폴리오 없음"
 
                 # ==========================================
-                # [3단계] Gemini AI 분석
+                # [3단계] AI에게 추천 종목 코드 받기
                 # ==========================================
                 genai.configure(api_key=MY_API_KEY)
                 model = genai.GenerativeModel('gemini-2.5-flash')
 
-                prompt = f"""
+                with st.spinner("🤖 AI 추천 종목 선정 중..."):
+                    prompt_ticker = f"""
+현재 시장 상황입니다:
+{market_data_str}
+
+{target_period} 한국 주식 추천 종목 3개를 JSON 형식으로만 답하세요.
+다른 말은 절대 하지 말고 아래 형식만 출력하세요:
+[
+  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유 한줄"}},
+  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유 한줄"}},
+  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유 한줄"}}
+]
+"""
+                    response_ticker = model.generate_content(prompt_ticker)
+                    json_str = re.search(r'\[.*\]', response_ticker.text, re.DOTALL).group()
+                    recommend_list = json.loads(json_str)
+
+                # ==========================================
+                # [4단계] 추천 종목 현재가 yfinance로 조회
+                # ==========================================
+                recommend_lines = []
+                for item in recommend_list:
+                    try:
+                        info = yf.Ticker(item["code"]).history(period="5d").dropna()
+                        현재가 = info["Close"].iloc[-1] if not info.empty else None
+                        if 현재가:
+                            매수가 = 현재가 * 0.97
+                            매도가 = 현재가 * 1.15
+                            recommend_lines.append(
+                                f"- {item['name']} ({item['code']})\n"
+                                f"  현재가: {현재가:,.0f}원\n"
+                                f"  추천이유: {item['reason']}\n"
+                                f"  매수시점: {매수가:,.0f}원 이하\n"
+                                f"  매도시점: {매도가:,.0f}원 이상"
+                            )
+                        else:
+                            recommend_lines.append(f"- {item['name']}: 현재가 조회 실패")
+                    except:
+                        recommend_lines.append(f"- {item['name']}: 현재가 조회 실패")
+
+                recommend_str = "\n".join(recommend_lines)
+
+                # ==========================================
+                # [5단계] 최종 AI 분석
+                # ==========================================
+                with st.spinner("🤖 AI 최종 분석 중..."):
+                    prompt = f"""
 한국 주식 전문가로서 다음 데이터를 분석해 주세요.
 
 [시장 정보]
@@ -204,26 +250,27 @@ else:
 [내 자산]
 {my_portfolio_str}
 
+[추천 종목 실제 현재가 데이터]
+{recommend_str}
+
 1. 내 종목 진단
    - 종목별 유지/매도/추가매수 의견
    - 매수 시점 (목표 매수가 또는 조건)
    - 매도 시점 (목표 매도가 또는 조건)
 
 2. {target_period} 신규 추천 종목 3개
-   - 종목명 및 추천 이유
-   - 현재가를 반드시 먼저 제시하고, 매수 시점은 현재가 기준 ±10% 이내로 제시
-   - 매도 시점은 현재가 기준 목표 수익률로 제시 (예: 현재가 대비 +15%)
-   - 현재가보다 터무니없이 낮거나 높은 가격은 절대 제시하지 말 것
+   - 위 추천 종목 현재가 데이터를 그대로 사용할 것
+   - 임의로 가격을 절대 만들지 말 것
 
 3. 전문가 총평
 
 모바일에서 읽기 편하게 세로 리스트 형식으로 작성하세요.
 """
-                response = model.generate_content(prompt)
-                result_text = response.text
+                    response = model.generate_content(prompt)
+                    result_text = response.text
 
                 # ==========================================
-                # [4단계] 결과 출력
+                # [6단계] 결과 출력
                 # ==========================================
                 st.markdown("### 📊 시장 현황")
                 for line in market_lines:
