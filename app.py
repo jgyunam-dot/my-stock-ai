@@ -17,6 +17,7 @@ MY_PW = "1234"
 # .streamlit/secrets.toml 파일에 아래처럼 작성:
 # GITHUB_TOKEN = "ghp_..."
 # REPO_NAME = "jgyunam-dot/my-stock-ai"
+MY_API_KEY = st.secrets["GEMINI_API_KEY"]
 GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
 REPO_NAME    = st.secrets["REPO_NAME"]
 FILE_PATH    = "portfolio.json"
@@ -71,17 +72,13 @@ if not st.session_state.logged_in:
 
     id_input  = st.text_input("아이디")
     pw_input  = st.text_input("비밀번호", type="password")
-    api_input = st.text_input("🔑 Gemini API 키", type="password", placeholder="AIza...")  # ✅ 추가
-
+    
     if st.button("로그인", use_container_width=True):
         if id_input == MY_ID and pw_input == MY_PW:
-            if not api_input.startswith("AIza"):  # 간단한 유효성 검사
-                st.error("❌ 올바른 Gemini API 키를 입력해 주세요.")
-            else:
-                st.session_state.logged_in  = True
-                st.session_state.api_key    = api_input        # ✅ session_state에 저장
-                st.session_state.portfolio  = load_github_json()
-                st.rerun()
+            st.session_state.logged_in = True
+            st.session_state.portfolio = load_github_json()
+            st.rerun()
+            
         else:
             st.error("아이디 또는 비밀번호가 틀렸습니다.")
 
