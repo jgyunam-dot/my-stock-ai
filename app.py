@@ -134,7 +134,7 @@ else:
                             curr = data["Close"].iloc[-1]
                             market_lines.append(f"{name}: {curr:,.2f} (전일 대비 데이터 없음)")
                         else:
-                            market_lines.append(f"{name}: 데이터 없음"
+                            market_lines.append(f"{name}: 데이터 없음")
                     except Exception as e:
                         market_lines.append(f"{name}: 조회 실패")
 
