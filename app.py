@@ -17,15 +17,15 @@ from github import Github
 MY_ID = st.secrets["MY_ID"]
 MY_PW = st.secrets["MY_PW"]
 
-MY_API_KEY       = st.secrets["GEMINI_API_KEY"]
-GITHUB_TOKEN     = st.secrets["GITHUB_TOKEN"]
-REPO_NAME        = st.secrets["REPO_NAME"]
-KIS_APP_KEY      = st.secrets["KIS_APP_KEY"]
-KIS_APP_SECRET   = st.secrets["KIS_APP_SECRET"]
-KIS_ACCOUNT      = st.secrets["KIS_ACCOUNT"]
-KIS_ACCOUNT_SUF  = st.secrets["KIS_ACCOUNT_SUFFIX"]
-FILE_PATH        = "portfolio.json"
-KIS_BASE_URL     = "https://openapi.koreainvestment.com:9443"
+MY_API_KEY      = st.secrets["GEMINI_API_KEY"]
+GITHUB_TOKEN    = st.secrets["GITHUB_TOKEN"]
+REPO_NAME       = st.secrets["REPO_NAME"]
+KIS_APP_KEY     = st.secrets["KIS_APP_KEY"]
+KIS_APP_SECRET  = st.secrets["KIS_APP_SECRET"]
+KIS_ACCOUNT     = st.secrets["KIS_ACCOUNT"]
+KIS_ACCOUNT_SUF = st.secrets["KIS_ACCOUNT_SUFFIX"]
+FILE_PATH       = "portfolio.json"
+KIS_BASE_URL    = "https://openapi.koreainvestment.com:9443"
 
 # ==========================================
 # 1. KIS API 토큰 발급
@@ -39,12 +39,14 @@ def get_kis_token():
     }
     try:
         res = requests.post(url, json=body, timeout=10)
+        st.write(f"🔍 KIS 토큰 응답: {res.status_code} / {res.json()}")
         return res.json().get("access_token", None)
-    except:
+    except Exception as e:
+        st.write(f"🔍 KIS 토큰 에러: {e}")
         return None
 
 # ==========================================
-# 2. KIS - 외국인/기관 순매수 상위 종목
+# 2. KIS - 외국인/기관 순매수 상위
 # ==========================================
 def get_kis_foreign_buying(token):
     url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/ranking/foreigninstitution-total"
@@ -70,6 +72,8 @@ def get_kis_foreign_buying(token):
     }
     try:
         res = requests.get(url, headers=headers, params=params, timeout=10)
+        st.write(f"🔍 수급 상태코드: {res.status_code}")
+        st.write(f"🔍 수급 응답내용: {res.text[:500]}")
         data = res.json()
         items = data.get("output", [])[:5]
         lines = []
@@ -84,7 +88,7 @@ def get_kis_foreign_buying(token):
         return f"수급 데이터 조회 실패: {e}"
 
 # ==========================================
-# 3. KIS - 거래량 상위 종목
+# 3. KIS - 거래량 상위
 # ==========================================
 def get_kis_volume_rank(token):
     url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/ranking/volume"
@@ -111,6 +115,8 @@ def get_kis_volume_rank(token):
     }
     try:
         res = requests.get(url, headers=headers, params=params, timeout=10)
+        st.write(f"🔍 거래량 상태코드: {res.status_code}")
+        st.write(f"🔍 거래량 응답내용: {res.text[:500]}")
         data = res.json()
         items = data.get("output", [])[:5]
         lines = []
@@ -126,7 +132,7 @@ def get_kis_volume_rank(token):
         return f"거래량 데이터 조회 실패: {e}"
 
 # ==========================================
-# 4. 기술적 지표 계산 (RSI, MACD)
+# 4. 기술적 지표 계산
 # ==========================================
 def calc_indicators(ticker_code):
     try:
@@ -136,7 +142,6 @@ def calc_indicators(ticker_code):
 
         close = data["Close"]
 
-        # RSI 계산
         delta = close.diff()
         gain  = delta.clip(lower=0).rolling(14).mean()
         loss  = (-delta.clip(upper=0)).rolling(14).mean()
@@ -144,7 +149,6 @@ def calc_indicators(ticker_code):
         rsi   = 100 - (100 / (1 + rs))
         rsi_val = round(rsi.iloc[-1], 1)
 
-        # MACD 계산
         ema12  = close.ewm(span=12).mean()
         ema26  = close.ewm(span=26).mean()
         macd   = ema12 - ema26
@@ -153,7 +157,6 @@ def calc_indicators(ticker_code):
         signal_val = round(signal.iloc[-1], 2)
         macd_cross = "골든크로스 ▲" if macd_val > signal_val else "데드크로스 ▼"
 
-        # 볼린저밴드
         ma20  = close.rolling(20).mean()
         std20 = close.rolling(20).std()
         upper = ma20 + 2 * std20
@@ -324,9 +327,7 @@ else:
     if st.button("🚀 AI 자산 진단 시작", use_container_width=True):
         with st.spinner("📡 시장 데이터 수집 중..."):
             try:
-                # ==========================================
                 # [1단계] 시장 지수
-                # ==========================================
                 tickers = {
                     "코스피": "^KS11",
                     "코스닥": "^KQ11",
@@ -358,9 +359,7 @@ else:
                         market_lines.append(f"{name}: 조회 실패 ({e})")
                 market_data_str = "\n".join(market_lines)
 
-                # ==========================================
                 # [2단계] KIS API - 수급 + 거래량
-                # ==========================================
                 with st.spinner("📊 외국인/기관 수급 데이터 수집 중..."):
                     kis_token = get_kis_token()
                     if kis_token:
@@ -370,15 +369,11 @@ else:
                         foreign_str = "KIS 토큰 발급 실패"
                         volume_str  = "KIS 토큰 발급 실패"
 
-                # ==========================================
-                # [3단계] 뉴스 수집
-                # ==========================================
+                # [3단계] 뉴스
                 with st.spinner("📰 실시간 뉴스 수집 중..."):
                     news_str = get_stock_news()
 
-                # ==========================================
-                # [4단계] 포트폴리오 현재가 + 기술적 지표
-                # ==========================================
+                # [4단계] 포트폴리오 현재가 + 기술지표
                 portfolio = st.session_state.portfolio.copy()
                 portfolio_lines = []
                 my_stock_codes = portfolio["종목명"].astype(str).str.strip().tolist()
@@ -401,12 +396,8 @@ else:
                     손익률 = ((현재가 - 평단가) / 평단가) * 100
                     sign   = "▲" if 손익률 > 0 else "▼"
 
-                    # 기술적 지표
                     ind = calc_indicators(종목명)
-                    if ind:
-                        ind_str = f"RSI {ind['rsi']} | MACD {ind['macd']} | BB {ind['bb']}"
-                    else:
-                        ind_str = "지표 계산 불가"
+                    ind_str = f"RSI {ind['rsi']} | MACD {ind['macd']} | BB {ind['bb']}" if ind else "지표 계산 불가"
 
                     portfolio_lines.append(
                         f"- {종목명}: 현재가 {현재가:,.0f}원 | 평단 {평단가:,.0f}원 | "
@@ -416,9 +407,7 @@ else:
 
                 my_portfolio_str = "\n".join(portfolio_lines) if portfolio_lines else "포트폴리오 없음"
 
-                # ==========================================
-                # [5단계] AI 추천 종목 코드 받기
-                # ==========================================
+                # [5단계] AI 추천 종목 코드
                 genai.configure(api_key=MY_API_KEY)
                 model = genai.GenerativeModel('gemini-2.5-flash')
 
@@ -462,9 +451,7 @@ else:
                     json_str = re.search(r'\[.*\]', response_ticker.text, re.DOTALL).group()
                     recommend_list = json.loads(json_str)
 
-                # ==========================================
-                # [6단계] 추천 종목 현재가 + 기술지표 조회
-                # ==========================================
+                # [6단계] 추천 종목 현재가 + 기술지표
                 recommend_lines = []
                 for item in recommend_list:
                     try:
@@ -496,9 +483,7 @@ else:
 
                 recommend_str = "\n".join(recommend_lines)
 
-                # ==========================================
                 # [7단계] 최종 AI 분석
-                # ==========================================
                 with st.spinner("🤖 AI 최종 분석 중..."):
                     prompt = f"""
 당신은 대한민국 주식시장에서 30년 이상 활동한 최고 수익률의 전문 트레이더입니다.
@@ -563,9 +548,7 @@ else:
                     response = generate_with_retry(model, prompt)
                     result_text = response.text
 
-                # ==========================================
                 # [8단계] 결과 출력
-                # ==========================================
                 st.markdown("### 📊 시장 현황")
                 for line in market_lines:
                     st.markdown(f"- {line}")
