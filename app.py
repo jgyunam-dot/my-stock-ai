@@ -32,27 +32,33 @@ def load_github_json():
         return pd.DataFrame(columns=["종목명", "보유수량", "평단가"])
 
 def save_github_json(df):
-    g = Github(GITHUB_TOKEN)
-    repo = g.get_repo(REPO_NAME)
-    # 데이터프레임을 JSON 문자열로 변환
-    data_str = df.to_json(orient='records', force_ascii=False)
-    
     try:
-        # 1. 기존 파일이 있는지 확인하고 업데이트
-        contents = repo.get_contents(FILE_PATH)
-        repo.update_file(
-            path=contents.path, 
-            message="Update portfolio data", 
-            content=data_str, 
-            sha=contents.sha
-        )
+        g = Github(GITHUB_TOKEN)
+        repo = g.get_repo(REPO_NAME)
+        
+        # 데이터프레임을 JSON 문자열로 변환 (한글 깨짐 방지 포함)
+        data_str = df.to_json(orient='records', force_ascii=False)
+        
+        try:
+            # 1. 기존 파일이 있는지 확인
+            contents = repo.get_contents(FILE_PATH)
+            # 2. 파일이 있으면 업데이트 (update_file)
+            repo.update_file(
+                path=contents.path, 
+                message="Update portfolio data", 
+                content=data_str, 
+                sha=contents.sha
+            )
+        except:
+            # 3. 파일이 없으면 새로 생성 (create_file)
+            repo.create_file(
+                path=FILE_PATH, 
+                message="Initial portfolio data", 
+                content=data_str
+            )
+        st.success("✅ 깃허브 저장소에 데이터가 안전하게 보관되었습니다!")
     except Exception as e:
-        # 2. 파일이 없으면(404 에러 등) 새로 생성
-        repo.create_file(
-            path=FILE_PATH, 
-            message="Create portfolio data", 
-            content=data_str
-        )
+        st.error(f"❌ 저장 중 오류 발생: {e}")
 
 # ==========================================
 # 2. 메인 페이지 로직
