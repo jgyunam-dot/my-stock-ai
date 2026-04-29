@@ -112,25 +112,30 @@ else:
             try:
                 # [1단계] 시장 데이터 수집
                 tickers = {
-                    "코스피": "^KS11",
-                    "코스닥": "^KQ11",
+                    "코스피": "KS11.KS",
+                    "코스닥": "KQ11.KQ",
                     "달러/원": "KRW=X",
                     "나스닥": "^IXIC",
+                    "S&P500": "^GSPC",
                 }
 
                 market_lines = []
                 for name, ticker in tickers.items():
                     try:
-                        data = yf.Ticker(ticker).history(period="2d")
+                        data = yf.Ticker(ticker).history(period="5d")
+                        data = data.dropna()
                         if len(data) >= 2:
                             prev = data["Close"].iloc[-2]
                             curr = data["Close"].iloc[-1]
                             chg  = ((curr - prev) / prev) * 100
                             sign = "▲" if chg > 0 else "▼"
                             market_lines.append(f"{name}: {curr:,.2f} ({sign}{abs(chg):.2f}%)")
+                        elif len(data) == 1:
+                            curr = data["Close"].iloc[-1]
+                            market_lines.append(f"{name}: {curr:,.2f} (전일 대비 데이터 없음)")
                         else:
-                            market_lines.append(f"{name}: 데이터 없음")
-                    except:
+                            market_lines.append(f"{name}: 데이터 없음"
+                    except Exception as e:
                         market_lines.append(f"{name}: 조회 실패")
 
                 market_data_str = "\n".join(market_lines)
