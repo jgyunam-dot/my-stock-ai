@@ -14,16 +14,163 @@ from github import Github
 # ==========================================
 # 0. 설정
 # ==========================================
-MY_ID = "jgyunam"
-MY_PW = "1234"
+MY_ID = st.secrets["MY_ID"]
+MY_PW = st.secrets["MY_PW"]
 
-MY_API_KEY   = st.secrets["GEMINI_API_KEY"]
-GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
-REPO_NAME    = st.secrets["REPO_NAME"]
-FILE_PATH    = "portfolio.json"
+MY_API_KEY       = st.secrets["GEMINI_API_KEY"]
+GITHUB_TOKEN     = st.secrets["GITHUB_TOKEN"]
+REPO_NAME        = st.secrets["REPO_NAME"]
+KIS_APP_KEY      = st.secrets["KIS_APP_KEY"]
+KIS_APP_SECRET   = st.secrets["KIS_APP_SECRET"]
+KIS_ACCOUNT      = st.secrets["KIS_ACCOUNT"]
+KIS_ACCOUNT_SUF  = st.secrets["KIS_ACCOUNT_SUFFIX"]
+FILE_PATH        = "portfolio.json"
+KIS_BASE_URL     = "https://openapi.koreainvestment.com:9443"
 
 # ==========================================
-# 1. 깃허브 JSON 파일 읽기/쓰기 함수
+# 1. KIS API 토큰 발급
+# ==========================================
+def get_kis_token():
+    url = f"{KIS_BASE_URL}/oauth2/tokenP"
+    body = {
+        "grant_type": "client_credentials",
+        "appkey": KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET
+    }
+    try:
+        res = requests.post(url, json=body, timeout=10)
+        return res.json().get("access_token", None)
+    except:
+        return None
+
+# ==========================================
+# 2. KIS - 외국인/기관 순매수 상위 종목
+# ==========================================
+def get_kis_foreign_buying(token):
+    url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/ranking/foreigninstitution-total"
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET,
+        "tr_id": "FHPST02060000",
+        "custtype": "P",
+        "Content-Type": "application/json"
+    }
+    params = {
+        "fid_cond_mrkt_div_code": "J",
+        "fid_cond_scr_div_code": "20206",
+        "fid_input_iscd": "0000",
+        "fid_div_cls_code": "0",
+        "fid_trgt_cls_code": "0",
+        "fid_trgt_exls_cls_code": "0",
+        "fid_input_price_1": "",
+        "fid_input_price_2": "",
+        "fid_vol_cnt": "",
+        "fid_input_date_1": ""
+    }
+    try:
+        res = requests.get(url, headers=headers, params=params, timeout=10)
+        data = res.json()
+        items = data.get("output", [])[:5]
+        lines = []
+        for item in items:
+            name = item.get("hts_kor_isnm", "")
+            code = item.get("mksc_shrn_iscd", "")
+            frgn = item.get("frgn_ntby_qty", "0")
+            inst = item.get("orgn_ntby_qty", "0")
+            lines.append(f"- {name}({code}): 외국인 {int(frgn):+,}주 | 기관 {int(inst):+,}주")
+        return "\n".join(lines) if lines else "데이터 없음"
+    except Exception as e:
+        return f"수급 데이터 조회 실패: {e}"
+
+# ==========================================
+# 3. KIS - 거래량 상위 종목
+# ==========================================
+def get_kis_volume_rank(token):
+    url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/ranking/volume"
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET,
+        "tr_id": "FHPST01710000",
+        "custtype": "P",
+        "Content-Type": "application/json"
+    }
+    params = {
+        "fid_cond_mrkt_div_code": "J",
+        "fid_cond_scr_div_code": "20171",
+        "fid_input_iscd": "0000",
+        "fid_div_cls_code": "0",
+        "fid_blng_cls_code": "0",
+        "fid_trgt_cls_code": "111111111",
+        "fid_trgt_exls_cls_code": "000000",
+        "fid_input_price_1": "",
+        "fid_input_price_2": "",
+        "fid_vol_cnt": "",
+        "fid_input_date_1": ""
+    }
+    try:
+        res = requests.get(url, headers=headers, params=params, timeout=10)
+        data = res.json()
+        items = data.get("output", [])[:5]
+        lines = []
+        for item in items:
+            name = item.get("hts_kor_isnm", "")
+            code = item.get("mksc_shrn_iscd", "")
+            vol  = item.get("acml_vol", "0")
+            chg  = item.get("prdy_ctrt", "0")
+            sign = "▲" if float(chg) > 0 else "▼"
+            lines.append(f"- {name}({code}): 거래량 {int(vol):,}주 | {sign}{abs(float(chg)):.2f}%")
+        return "\n".join(lines) if lines else "데이터 없음"
+    except Exception as e:
+        return f"거래량 데이터 조회 실패: {e}"
+
+# ==========================================
+# 4. 기술적 지표 계산 (RSI, MACD)
+# ==========================================
+def calc_indicators(ticker_code):
+    try:
+        data = yf.Ticker(ticker_code).history(period="3mo").dropna()
+        if len(data) < 26:
+            return None
+
+        close = data["Close"]
+
+        # RSI 계산
+        delta = close.diff()
+        gain  = delta.clip(lower=0).rolling(14).mean()
+        loss  = (-delta.clip(upper=0)).rolling(14).mean()
+        rs    = gain / loss
+        rsi   = 100 - (100 / (1 + rs))
+        rsi_val = round(rsi.iloc[-1], 1)
+
+        # MACD 계산
+        ema12  = close.ewm(span=12).mean()
+        ema26  = close.ewm(span=26).mean()
+        macd   = ema12 - ema26
+        signal = macd.ewm(span=9).mean()
+        macd_val   = round(macd.iloc[-1], 2)
+        signal_val = round(signal.iloc[-1], 2)
+        macd_cross = "골든크로스 ▲" if macd_val > signal_val else "데드크로스 ▼"
+
+        # 볼린저밴드
+        ma20  = close.rolling(20).mean()
+        std20 = close.rolling(20).std()
+        upper = ma20 + 2 * std20
+        lower = ma20 - 2 * std20
+        bb_pos = "상단 근접" if close.iloc[-1] > upper.iloc[-1] * 0.98 else \
+                 "하단 근접" if close.iloc[-1] < lower.iloc[-1] * 1.02 else "중간"
+
+        return {
+            "rsi": rsi_val,
+            "macd": macd_cross,
+            "bb": bb_pos
+        }
+    except:
+        return None
+
+# ==========================================
+# 5. 깃허브 JSON 파일 읽기/쓰기
 # ==========================================
 def load_github_json():
     try:
@@ -60,7 +207,7 @@ def save_github_json(df):
         return False
 
 # ==========================================
-# 2. 자동 저장 함수
+# 6. 자동 저장
 # ==========================================
 def auto_save():
     editor_state = st.session_state["portfolio_editor"]
@@ -81,7 +228,7 @@ def auto_save():
         st.session_state.portfolio = df
 
 # ==========================================
-# 3. 날짜/장 상태 판단 함수
+# 7. 장 상태 판단
 # ==========================================
 def get_market_context():
     kst = pytz.timezone('Asia/Seoul')
@@ -101,32 +248,27 @@ def get_market_context():
         return now, "내일 장", "장 마감 이후이므로 내일 장 시작 기준 분석"
 
 # ==========================================
-# 4. Google 뉴스 RSS 크롤링 함수
+# 8. Google 뉴스 RSS
 # ==========================================
 def get_stock_news():
     news_list = []
     queries = ["한국 주식", "코스피 코스닥", "증시 전망"]
-
     for query in queries:
         try:
             url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR&ceid=KR:ko"
-            response = requests.get(url, timeout=5)
-            root = ET.fromstring(response.content)
-
-            for item in root.findall(".//item")[:3]:  # 쿼리당 3개
+            res = requests.get(url, timeout=5)
+            root = ET.fromstring(res.content)
+            for item in root.findall(".//item")[:3]:
                 title = item.find("title")
-                pub_date = item.find("pubDate")
+                pub   = item.find("pubDate")
                 if title is not None:
-                    news_list.append(
-                        f"- {title.text} ({pub_date.text[:16] if pub_date is not None else ''})"
-                    )
+                    news_list.append(f"- {title.text} ({pub.text[:16] if pub is not None else ''})")
         except:
             continue
-
     return "\n".join(news_list) if news_list else "뉴스 조회 실패"
 
 # ==========================================
-# 5. 429 재시도 함수
+# 9. 429 재시도
 # ==========================================
 def generate_with_retry(model, prompt, max_retries=3):
     for i in range(max_retries):
@@ -142,14 +284,14 @@ def generate_with_retry(model, prompt, max_retries=3):
     raise Exception("최대 재시도 횟수 초과")
 
 # ==========================================
-# 6. 메인 페이지 로직
+# 10. 메인 페이지
 # ==========================================
 st.set_page_config(page_title="AI 주식 비서 PRO", page_icon="📈", layout="centered")
 
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
-# --- 로그인 화면 ---
+# --- 로그인 ---
 if not st.session_state.logged_in:
     st.markdown("<h2 style='text-align: center;'>🔒 로그인</h2>", unsafe_allow_html=True)
     id_input = st.text_input("아이디")
@@ -162,13 +304,11 @@ if not st.session_state.logged_in:
         else:
             st.error("아이디 또는 비밀번호가 틀렸습니다.")
 
-# --- 메인 앱 화면 ---
+# --- 메인 ---
 else:
     now, target_period, market_context = get_market_context()
-
     st.markdown(f"<h3 style='text-align: center;'>📱 {target_period} 맞춤형 리포트</h3>", unsafe_allow_html=True)
 
-    # 포트폴리오 관리 영역
     with st.expander("💼 내 종목 관리", expanded=False):
         st.data_editor(
             st.session_state.portfolio,
@@ -181,21 +321,19 @@ else:
 
     st.markdown("---")
 
-    # 분석 버튼 및 로직
     if st.button("🚀 AI 자산 진단 시작", use_container_width=True):
         with st.spinner("📡 시장 데이터 수집 중..."):
             try:
                 # ==========================================
-                # [1단계] 시장 데이터 수집
+                # [1단계] 시장 지수
                 # ==========================================
                 tickers = {
                     "코스피": "^KS11",
                     "코스닥": "^KQ11",
                     "달러/원": "KRW=X",
-                    "나스닥": "^IXIC",
-                    "S&P500": "^GSPC",
+                    "나스닥":  "^IXIC",
+                    "S&P500":  "^GSPC",
                 }
-
                 market_lines = []
                 for name, ticker in tickers.items():
                     try:
@@ -218,21 +356,31 @@ else:
                                 market_lines.append(f"{name}: 데이터 없음")
                     except Exception as e:
                         market_lines.append(f"{name}: 조회 실패 ({e})")
-
                 market_data_str = "\n".join(market_lines)
 
                 # ==========================================
-                # [2단계] 실시간 뉴스 수집 ← 추가
+                # [2단계] KIS API - 수급 + 거래량
+                # ==========================================
+                with st.spinner("📊 외국인/기관 수급 데이터 수집 중..."):
+                    kis_token = get_kis_token()
+                    if kis_token:
+                        foreign_str = get_kis_foreign_buying(kis_token)
+                        volume_str  = get_kis_volume_rank(kis_token)
+                    else:
+                        foreign_str = "KIS 토큰 발급 실패"
+                        volume_str  = "KIS 토큰 발급 실패"
+
+                # ==========================================
+                # [3단계] 뉴스 수집
                 # ==========================================
                 with st.spinner("📰 실시간 뉴스 수집 중..."):
                     news_str = get_stock_news()
 
                 # ==========================================
-                # [3단계] 포트폴리오 현재가 조회
+                # [4단계] 포트폴리오 현재가 + 기술적 지표
                 # ==========================================
                 portfolio = st.session_state.portfolio.copy()
                 portfolio_lines = []
-
                 my_stock_codes = portfolio["종목명"].astype(str).str.strip().tolist()
                 my_stock_codes_str = ", ".join(my_stock_codes) if my_stock_codes else "없음"
 
@@ -253,15 +401,23 @@ else:
                     손익률 = ((현재가 - 평단가) / 평단가) * 100
                     sign   = "▲" if 손익률 > 0 else "▼"
 
+                    # 기술적 지표
+                    ind = calc_indicators(종목명)
+                    if ind:
+                        ind_str = f"RSI {ind['rsi']} | MACD {ind['macd']} | BB {ind['bb']}"
+                    else:
+                        ind_str = "지표 계산 불가"
+
                     portfolio_lines.append(
                         f"- {종목명}: 현재가 {현재가:,.0f}원 | 평단 {평단가:,.0f}원 | "
-                        f"{sign}{abs(손익률):.1f}% | 평가손익 {손익:+,.0f}원"
+                        f"{sign}{abs(손익률):.1f}% | 평가손익 {손익:+,.0f}원\n"
+                        f"  기술지표: {ind_str}"
                     )
 
                 my_portfolio_str = "\n".join(portfolio_lines) if portfolio_lines else "포트폴리오 없음"
 
                 # ==========================================
-                # [4단계] AI에게 추천 종목 코드 받기
+                # [5단계] AI 추천 종목 코드 받기
                 # ==========================================
                 genai.configure(api_key=MY_API_KEY)
                 model = genai.GenerativeModel('gemini-2.5-flash')
@@ -269,12 +425,18 @@ else:
                 with st.spinner("🤖 AI 추천 종목 선정 중..."):
                     prompt_ticker = f"""
 당신은 대한민국 주식시장에서 30년 이상 활동한 최고 수익률의 전문 트레이더입니다.
-수많은 상승장과 하락장을 경험했으며, 기술적 분석과 기본적 분석을 모두 마스터했습니다.
+기술적 분석과 기본적 분석, 수급 분석을 모두 마스터했습니다.
 
 [현재 시장 상황]
 {market_data_str}
 
-[오늘의 실시간 주요 뉴스]
+[외국인/기관 순매수 상위 종목]
+{foreign_str}
+
+[거래량 상위 종목]
+{volume_str}
+
+[오늘의 실시간 뉴스]
 {news_str}
 
 [분석 시점]
@@ -283,19 +445,17 @@ else:
 [보유 종목 - 절대 추천 금지]
 {my_stock_codes_str}
 
-위 실시간 뉴스와 시장 상황을 종합해서 다음 조건을 충족하는 종목만 추천하세요:
+위 수급 데이터, 거래량, 뉴스를 종합해서 다음 조건을 충족하는 종목만 추천하세요:
 - 보유 종목과 완전히 다른 종목
-- 오늘 뉴스 흐름과 연관성이 높은 종목
-- 현재 시장 흐름(지수, 환율, 나스닥)과 연동성이 높은 종목
-- 단기 모멘텀이 살아있는 종목
-- 리스크 대비 수익률이 검증된 종목
+- 외국인 또는 기관 순매수가 활발한 종목 우선
+- 거래량 증가 + 뉴스 모멘텀이 있는 종목
 - {target_period} 시장 흐름에 맞는 종목
 
 아래 JSON 형식으로만 출력하세요. 다른 말은 절대 하지 마세요:
 [
-  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유 (뉴스 연관성, 섹터, 모멘텀 포함)"}},
-  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유 (뉴스 연관성, 섹터, 모멘텀 포함)"}},
-  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유 (뉴스 연관성, 섹터, 모멘텀 포함)"}}
+  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유 (수급+뉴스+모멘텀 포함)"}},
+  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유 (수급+뉴스+모멘텀 포함)"}},
+  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유 (수급+뉴스+모멘텀 포함)"}}
 ]
 """
                     response_ticker = generate_with_retry(model, prompt_ticker)
@@ -303,7 +463,7 @@ else:
                     recommend_list = json.loads(json_str)
 
                 # ==========================================
-                # [5단계] 추천 종목 현재가 yfinance로 조회
+                # [6단계] 추천 종목 현재가 + 기술지표 조회
                 # ==========================================
                 recommend_lines = []
                 for item in recommend_list:
@@ -315,9 +475,14 @@ else:
                             목표가1 = 현재가 * 1.10
                             목표가2 = 현재가 * 1.20
                             손절가  = 현재가 * 0.93
+
+                            ind = calc_indicators(item["code"])
+                            ind_str = f"RSI {ind['rsi']} | MACD {ind['macd']} | BB {ind['bb']}" if ind else "지표 계산 불가"
+
                             recommend_lines.append(
                                 f"- {item['name']} ({item['code']})\n"
                                 f"  현재가: {현재가:,.0f}원\n"
+                                f"  기술지표: {ind_str}\n"
                                 f"  추천이유: {item['reason']}\n"
                                 f"  매수시점: {매수가:,.0f}원 이하\n"
                                 f"  1차 목표가: {목표가1:,.0f}원 (+10%)\n"
@@ -332,12 +497,12 @@ else:
                 recommend_str = "\n".join(recommend_lines)
 
                 # ==========================================
-                # [6단계] 최종 AI 분석
+                # [7단계] 최종 AI 분석
                 # ==========================================
                 with st.spinner("🤖 AI 최종 분석 중..."):
                     prompt = f"""
 당신은 대한민국 주식시장에서 30년 이상 활동한 최고 수익률의 전문 트레이더입니다.
-기술적 분석(이동평균, RSI, MACD, 볼린저밴드), 기본적 분석(PER, PBR, 실적),
+기술적 분석(RSI, MACD, 볼린저밴드), 기본적 분석(PER, PBR),
 섹터 로테이션, 외국인/기관 수급 분석까지 모두 활용합니다.
 
 [분석 시점]
@@ -346,13 +511,19 @@ else:
 [시장 정보]
 {market_data_str}
 
-[오늘의 실시간 주요 뉴스]
+[외국인/기관 순매수 상위]
+{foreign_str}
+
+[거래량 상위]
+{volume_str}
+
+[오늘의 실시간 뉴스]
 {news_str}
 
-[내 보유 자산 현황]
+[내 보유 자산 현황 + 기술지표]
 {my_portfolio_str}
 
-[신규 추천 종목 실제 현재가]
+[신규 추천 종목 실제 현재가 + 기술지표]
 {recommend_str}
 
 아래 3가지를 모바일에서 읽기 편하게 세로 리스트로 작성하세요.
@@ -360,47 +531,54 @@ else:
 ---
 
 1. 📊 내 종목 진단
-각 종목마다 아래 항목을 작성:
+각 종목마다:
 - 종목명
-- 현재 상태: (수익/손실 %)
-- 진단: 유지 / 추가매수 / 일부매도 / 전량매도 중 하나
-- 근거: 오늘 뉴스, 시장 흐름, 섹터 상황 관점에서 2~3줄
-- 매수 시점: 구체적인 가격 또는 조건
-- 매도 시점: 목표가 또는 손절가
+- 현재 상태 (수익/손실 %)
+- 기술지표 해석 (RSI 과매수/과매도, MACD 방향, BB 위치)
+- 진단: 유지 / 추가매수 / 일부매도 / 전량매도
+- 근거: 수급+뉴스+기술지표 종합 2~3줄
+- 매수 시점: 구체적 가격
+- 매도 시점: 목표가 및 손절가
 
 ---
 
 2. 🔥 {target_period} 신규 추천 종목 3개
-각 종목마다 아래 항목을 작성:
+각 종목마다:
 - 종목명 (코드)
-- 현재가: (위 데이터 그대로 사용, 절대 임의로 만들지 말 것)
-- 추천 근거: 오늘 뉴스 연관성, 섹터 테마, 모멘텀 포함 3~4줄
-- 매수 시점: 현재가 기준 구체적 가격
-- 1차 목표가: 현재가 기준 %
-- 2차 목표가: 현재가 기준 %
-- 손절가: 현재가 기준 %
+- 현재가 (위 데이터 그대로, 절대 임의로 만들지 말 것)
+- 기술지표 해석
+- 추천 근거: 수급+뉴스+모멘텀 3~4줄
+- 매수 시점
+- 1차 목표가 / 2차 목표가
+- 손절가
 - 투자 기간: 단기 / 중기 / 장기
 
 ---
 
 3. 💬 전문가 총평
-- 오늘 뉴스 기반 시장 흐름 평가
-- {target_period} 투자 전략 핵심 한 줄
-- 리스크 요인 경고
+- 수급 + 뉴스 기반 시장 흐름 평가
+- {target_period} 핵심 투자 전략 한 줄
+- 리스크 경고
 """
                     response = generate_with_retry(model, prompt)
                     result_text = response.text
 
                 # ==========================================
-                # [7단계] 결과 출력
+                # [8단계] 결과 출력
                 # ==========================================
                 st.markdown("### 📊 시장 현황")
                 for line in market_lines:
                     st.markdown(f"- {line}")
 
                 st.markdown("---")
-                st.markdown("### 📰 수집된 실시간 뉴스")
-                with st.expander("뉴스 목록 보기"):
+                st.markdown("### 💹 외국인/기관 순매수 상위")
+                st.markdown(foreign_str)
+
+                st.markdown("### 🔥 거래량 상위")
+                st.markdown(volume_str)
+
+                st.markdown("---")
+                with st.expander("📰 수집된 실시간 뉴스"):
                     st.markdown(news_str)
 
                 st.markdown("---")
