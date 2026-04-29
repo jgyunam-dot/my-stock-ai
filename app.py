@@ -78,7 +78,27 @@ def auto_save():
         st.session_state.portfolio = df
 
 # ==========================================
-# 3. 메인 페이지 로직
+# 3. 날짜/장 상태 판단 함수
+# ==========================================
+def get_market_context():
+    kst = pytz.timezone('Asia/Seoul')
+    now = datetime.now(kst)
+    weekday = now.weekday()  # 0=월 ~ 6=일
+    hour = now.hour
+
+    if weekday == 5:  # 토요일
+        return now, "다음 월요일 장", "주말(토요일)이므로 다음 월요일 장 시작 전 분석"
+    elif weekday == 6:  # 일요일
+        return now, "내일 월요일 장", "주말(일요일)이므로 내일 월요일 장 시작 전 분석"
+    elif hour < 9:
+        return now, "오늘 장", "장 시작 전이므로 오늘 장 시작 기준 분석"
+    elif hour < 16:
+        return now, "오늘 장중", "현재 장중이므로 실시간 기준 분석"
+    else:
+        return now, "내일 장", "장 마감 이후이므로 내일 장 시작 기준 분석"
+
+# ==========================================
+# 4. 메인 페이지 로직
 # ==========================================
 st.set_page_config(page_title="AI 주식 비서 PRO", page_icon="📈", layout="centered")
 
@@ -100,9 +120,7 @@ if not st.session_state.logged_in:
 
 # --- 메인 앱 화면 ---
 else:
-    kst = pytz.timezone('Asia/Seoul')
-    now = datetime.now(kst)
-    target_period = "내일" if now.hour >= 16 else "오늘"
+    now, target_period, market_context = get_market_context()
 
     st.markdown(f"<h3 style='text-align: center;'>📱 {target_period} 맞춤형 리포트</h3>", unsafe_allow_html=True)
 
@@ -165,6 +183,10 @@ else:
                 portfolio = st.session_state.portfolio.copy()
                 portfolio_lines = []
 
+                # 보유 종목 코드 목록 (추천 제외용) ← 추가
+                my_stock_codes = portfolio["종목명"].astype(str).str.strip().tolist()
+                my_stock_codes_str = ", ".join(my_stock_codes) if my_stock_codes else "없음"
+
                 for _, row in portfolio.iterrows():
                     종목명 = str(row["종목명"]).strip()
                     수량   = float(row["보유수량"])
@@ -200,7 +222,13 @@ else:
 현재 시장 상황입니다:
 {market_data_str}
 
-{target_period} 한국 주식 추천 종목 3개를 JSON 형식으로만 답하세요.
+[분석 시점]
+{market_context}
+
+[이미 보유 중인 종목 코드 - 추천 목록에서 반드시 제외]
+{my_stock_codes_str}
+
+위 보유 종목은 절대 추천하지 말고, {target_period}에 적합한 신규 한국 주식 추천 종목 3개를 JSON 형식으로만 답하세요.
 다른 말은 절대 하지 말고 아래 형식만 출력하세요:
 [
   {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유 한줄"}},
@@ -244,6 +272,9 @@ else:
                     prompt = f"""
 한국 주식 전문가로서 다음 데이터를 분석해 주세요.
 
+[분석 시점]
+{market_context}
+
 [시장 정보]
 {market_data_str}
 
@@ -261,6 +292,7 @@ else:
 2. {target_period} 신규 추천 종목 3개
    - 위 추천 종목 현재가 데이터를 그대로 사용할 것
    - 임의로 가격을 절대 만들지 말 것
+   - 분석 시점에 맞는 투자 전략 제시
 
 3. 전문가 총평
 
