@@ -56,7 +56,7 @@ def save_github_json(df):
                 message="Initial portfolio data", 
                 content=data_str
             )
-        st.success("✅ 깃허브 저장소에 데이터가 안전하게 보관되었습니다!")
+        st.success("✅ 저장소에 데이터가 안전하게 보관되었습니다!")
     except Exception as e:
         st.error(f"❌ 저장 중 오류 발생: {e}")
 
@@ -90,12 +90,19 @@ else:
     st.markdown(f"<h3 style='text-align: center;'>📱 {target_period} 맞춤형 리포트</h3>", unsafe_allow_html=True)
 
     # 포트폴리오 관리 영역
-    with st.expander("💼 내 종목 관리 (JSON 저장)", expanded=False):
-        edited_df = st.data_editor(st.session_state.portfolio, num_rows="dynamic", use_container_width=True)
-        if st.button("💾 깃허브에 JSON 데이터 저장", use_container_width=True):
+    with st.expander("💼 내 종목 관리", expanded=False):
+     with st.form("portfolio_form"):  # ✅ form으로 감싸기
+        edited_df = st.data_editor(
+            st.session_state.portfolio,
+            num_rows="dynamic",
+            use_container_width=True
+        )
+        submitted = st.form_submit_button("💾 데이터 저장", use_container_width=True)
+        
+        if submitted:
             save_github_json(edited_df)
             st.session_state.portfolio = edited_df
-            st.success("깃허브 저장소에 portfolio.json이 업데이트되었습니다!")
+            st.success("내 종목이 업데이트되었습니다!")
 
     st.markdown("---")
 
