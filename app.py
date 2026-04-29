@@ -115,7 +115,7 @@ else:
             key="portfolio_editor",
             on_change=auto_save
         )
-        st.caption("✏️ 수정 후 키보드 완료 버튼 또는 다른 셀 터치 시 자동 저장됩니다")
+        st.caption("✏️ 수정 후 자동 저장됩니다")
 
     st.markdown("---")
 
