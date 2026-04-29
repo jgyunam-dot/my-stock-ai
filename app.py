@@ -34,15 +34,25 @@ def load_github_json():
 def save_github_json(df):
     g = Github(GITHUB_TOKEN)
     repo = g.get_repo(REPO_NAME)
+    # 데이터프레임을 JSON 문자열로 변환
     data_str = df.to_json(orient='records', force_ascii=False)
     
     try:
-        # 기존 파일 업데이트
+        # 1. 기존 파일이 있는지 확인하고 업데이트
         contents = repo.get_contents(FILE_PATH)
-        repo.update_contents(contents.path, "Update portfolio", data_str, contents.sha)
-    except:
-        # 파일이 없으면 새로 생성
-        repo.create_contents(FILE_PATH, "Create portfolio", data_str)
+        repo.update_file(
+            path=contents.path, 
+            message="Update portfolio data", 
+            content=data_str, 
+            sha=contents.sha
+        )
+    except Exception as e:
+        # 2. 파일이 없으면(404 에러 등) 새로 생성
+        repo.create_file(
+            path=FILE_PATH, 
+            message="Create portfolio data", 
+            content=data_str
+        )
 
 # ==========================================
 # 2. 메인 페이지 로직
