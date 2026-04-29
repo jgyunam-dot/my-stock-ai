@@ -8,16 +8,12 @@ import json
 from github import Github
 
 # ==========================================
-# 0. 설정 (민감 정보 없음 ✅)
+# 0. 설정
 # ==========================================
 MY_ID = "jgyunam"
 MY_PW = "1234"
 
-# GitHub 토큰은 Streamlit Secrets에서 가져옴
-# .streamlit/secrets.toml 파일에 아래처럼 작성:
-# GITHUB_TOKEN = "ghp_..."
-# REPO_NAME = "jgyunam-dot/my-stock-ai"
-MY_API_KEY = st.secrets["GEMINI_API_KEY"]
+MY_API_KEY   = st.secrets["GEMINI_API_KEY"]
 GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
 REPO_NAME    = st.secrets["REPO_NAME"]
 FILE_PATH    = "portfolio.json"
@@ -54,12 +50,34 @@ def save_github_json(df):
                 message="Initial portfolio data",
                 content=data_str
             )
-        st.success("✅ 저장소에 데이터가 안전하게 보관되었습니다!")
+        return True
     except Exception as e:
         st.error(f"❌ 저장 중 오류 발생: {e}")
+        return False
 
 # ==========================================
-# 2. 메인 페이지 로직
+# 2. 자동 저장 함수
+# ==========================================
+def auto_save():
+    editor_state = st.session_state["portfolio_editor"]
+    df = st.session_state.portfolio.copy()
+
+    for idx, edits in editor_state.get("edited_rows", {}).items():
+        for col, val in edits.items():
+            df.at[int(idx), col] = val
+
+    for row in editor_state.get("added_rows", []):
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+
+    deleted = editor_state.get("deleted_rows", [])
+    df = df.drop(index=deleted).reset_index(drop=True)
+
+    result = save_github_json(df)
+    if result:
+        st.session_state.portfolio = df
+
+# ==========================================
+# 3. 메인 페이지 로직
 # ==========================================
 st.set_page_config(page_title="AI 주식 비서 PRO", page_icon="📈", layout="centered")
 
@@ -69,16 +87,13 @@ if 'logged_in' not in st.session_state:
 # --- 로그인 화면 ---
 if not st.session_state.logged_in:
     st.markdown("<h2 style='text-align: center;'>🔒 로그인</h2>", unsafe_allow_html=True)
-
-    id_input  = st.text_input("아이디")
-    pw_input  = st.text_input("비밀번호", type="password")
-    
+    id_input = st.text_input("아이디")
+    pw_input = st.text_input("비밀번호", type="password")
     if st.button("로그인", use_container_width=True):
         if id_input == MY_ID and pw_input == MY_PW:
             st.session_state.logged_in = True
             st.session_state.portfolio = load_github_json()
             st.rerun()
-            
         else:
             st.error("아이디 또는 비밀번호가 틀렸습니다.")
 
@@ -92,17 +107,14 @@ else:
 
     # 포트폴리오 관리 영역
     with st.expander("💼 내 종목 관리", expanded=False):
-        with st.form("portfolio_form"):
-            edited_df = st.data_editor(
-                st.session_state.portfolio,
-                num_rows="dynamic",
-                use_container_width=True
-            )
-            submitted = st.form_submit_button("💾 데이터 저장", use_container_width=True)
-            if submitted:
-                save_github_json(edited_df)
-                st.session_state.portfolio = edited_df
-                st.success("내 종목이 업데이트되었습니다!")
+        st.data_editor(
+            st.session_state.portfolio,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="portfolio_editor",
+            on_change=auto_save  # ← 수정할 때마다 자동 저장
+        )
+        st.caption("✏️ 수정 후 자동 저장됩니다")
 
     st.markdown("---")
 
@@ -110,10 +122,12 @@ else:
     if st.button("🚀 AI 자산 진단 시작", use_container_width=True):
         with st.spinner("📡 시장 데이터 수집 중..."):
             try:
+                # ==========================================
                 # [1단계] 시장 데이터 수집
+                # ==========================================
                 tickers = {
-                    "코스피": "KS11.KS",
-                    "코스닥": "KQ11.KQ",
+                    "코스피": "^KS11",
+                    "코스닥": "^KQ11",
                     "달러/원": "KRW=X",
                     "나스닥": "^IXIC",
                     "S&P500": "^GSPC",
@@ -122,8 +136,9 @@ else:
                 market_lines = []
                 for name, ticker in tickers.items():
                     try:
-                        data = yf.Ticker(ticker).history(period="5d")
-                        data = data.dropna()
+                        t = yf.Ticker(ticker)
+                        data = t.history(period="5d").dropna()
+
                         if len(data) >= 2:
                             prev = data["Close"].iloc[-2]
                             curr = data["Close"].iloc[-1]
@@ -132,15 +147,21 @@ else:
                             market_lines.append(f"{name}: {curr:,.2f} ({sign}{abs(chg):.2f}%)")
                         elif len(data) == 1:
                             curr = data["Close"].iloc[-1]
-                            market_lines.append(f"{name}: {curr:,.2f} (전일 대비 데이터 없음)")
+                            market_lines.append(f"{name}: {curr:,.2f} (전일비 없음)")
                         else:
-                            market_lines.append(f"{name}: 데이터 없음")
+                            curr = t.fast_info.get("last_price", None)
+                            if curr:
+                                market_lines.append(f"{name}: {curr:,.2f} (실시간)")
+                            else:
+                                market_lines.append(f"{name}: 데이터 없음")
                     except Exception as e:
-                        market_lines.append(f"{name}: 조회 실패")
+                        market_lines.append(f"{name}: 조회 실패 ({e})")
 
                 market_data_str = "\n".join(market_lines)
 
+                # ==========================================
                 # [2단계] 포트폴리오 현재가 조회
+                # ==========================================
                 portfolio = st.session_state.portfolio.copy()
                 portfolio_lines = []
 
@@ -150,7 +171,7 @@ else:
                     평단가 = float(row["평단가"])
 
                     try:
-                        info = yf.Ticker(종목명).history(period="1d")
+                        info = yf.Ticker(종목명).history(period="5d").dropna()
                         현재가 = info["Close"].iloc[-1] if not info.empty else 평단가
                     except:
                         현재가 = 평단가
@@ -168,8 +189,10 @@ else:
 
                 my_portfolio_str = "\n".join(portfolio_lines) if portfolio_lines else "포트폴리오 없음"
 
+                # ==========================================
                 # [3단계] Gemini AI 분석
-                genai.configure(api_key=MY_API_KEY)  # ✅ session_state에서 사용
+                # ==========================================
+                genai.configure(api_key=MY_API_KEY)
                 model = genai.GenerativeModel('gemini-2.5-flash')
 
                 prompt = f"""
@@ -181,8 +204,16 @@ else:
 [내 자산]
 {my_portfolio_str}
 
-1. 내 종목 진단 (유지/매도/매수 지침)
-2. {target_period} 신규 추천 종목 2개
+1. 내 종목 진단
+   - 종목별 유지/매도/추가매수 의견
+   - 매수 시점 (목표 매수가 또는 조건)
+   - 매도 시점 (목표 매도가 또는 조건)
+
+2. {target_period} 신규 추천 종목 3개
+   - 종목명 및 추천 이유
+   - 매수 시점 (목표 매수가 또는 조건)
+   - 매도 시점 (목표 매도가 또는 조건)
+
 3. 전문가 총평
 
 모바일에서 읽기 편하게 세로 리스트 형식으로 작성하세요.
@@ -190,7 +221,9 @@ else:
                 response = model.generate_content(prompt)
                 result_text = response.text
 
+                # ==========================================
                 # [4단계] 결과 출력
+                # ==========================================
                 st.markdown("### 📊 시장 현황")
                 for line in market_lines:
                     st.markdown(f"- {line}")
