@@ -47,7 +47,12 @@ def get_kis_token():
 def get_kis_foreign_buying(token):
     major_stocks = [
         ("삼성전자", "005930"),
+        ("SK하이닉스", "000660"),
+        ("현대차", "005380"),
+        ("POSCO홀딩스", "005490"),
+        ("LG에너지솔루션", "373220"),
     ]
+    lines = []
     for name, code in major_stocks:
         try:
             url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
@@ -63,16 +68,32 @@ def get_kis_foreign_buying(token):
                 "FID_INPUT_ISCD": code
             }
             res = requests.get(url, headers=headers, params=params, timeout=5)
-            st.write(f"🔍 수급 상태코드: {res.status_code}")
-            st.write(f"🔍 수급 응답: {res.text[:500]}")
-        except Exception as e:
-            st.write(f"🔍 수급 에러: {e}")
-    return "디버그 중"
+            data = res.json()
+            output = data.get("output", [])
+
+            item = None
+            for o in output:
+                if o.get("frgn_ntby_qty", "") != "":
+                    item = o
+                    break
+
+            if item:
+                frgn = item.get("frgn_ntby_qty", "0")
+                inst = item.get("orgn_ntby_qty", "0")
+                date = item.get("stck_bsop_date", "")
+                date_str = f"{date[4:6]}/{date[6:8]}" if len(date) == 8 else ""
+                lines.append(
+                    f"- {name}({code}) [{date_str}기준]: "
+                    f"외국인 {int(frgn):+,}주 | 기관 {int(inst):+,}주"
+                )
+        except:
+            continue
+    return "\n".join(lines) if lines else "수급 데이터 없음"
 
 # ==========================================
 # 3. 거래량 - yfinance로 주요 종목 조회
 # ==========================================
-def get_kis_volume_rank(token):
+def get_volume_rank():
     major_stocks = [
         ("삼성전자", "005930.KS"),
         ("SK하이닉스", "000660.KS"),
@@ -246,8 +267,21 @@ def generate_with_retry(model, prompt, max_retries=3):
 # ==========================================
 st.set_page_config(page_title="AI 주식 비서 PRO", page_icon="📈", layout="centered")
 
+# session_state 초기화
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
+if 'analysis_result' not in st.session_state:  # ← 분석 결과 저장용
+    st.session_state.analysis_result = None
+if 'analysis_time' not in st.session_state:    # ← 분석 시각 저장용
+    st.session_state.analysis_time = None
+if 'market_lines' not in st.session_state:
+    st.session_state.market_lines = None
+if 'foreign_str' not in st.session_state:
+    st.session_state.foreign_str = None
+if 'volume_str' not in st.session_state:
+    st.session_state.volume_str = None
+if 'news_str' not in st.session_state:
+    st.session_state.news_str = None
 
 # --- 로그인 ---
 if not st.session_state.logged_in:
@@ -317,12 +351,8 @@ else:
                 # [2단계] KIS 수급 + 거래량
                 with st.spinner("📊 수급/거래량 데이터 수집 중..."):
                     kis_token = get_kis_token()
-                    if kis_token:
-                        foreign_str = get_kis_foreign_buying(kis_token)
-                        volume_str  = get_kis_volume_rank(kis_token)
-                    else:
-                        foreign_str = "KIS 토큰 발급 실패"
-                        volume_str  = "KIS 토큰 발급 실패"
+                    foreign_str = get_kis_foreign_buying(kis_token) if kis_token else "KIS 토큰 발급 실패"
+                    volume_str  = get_volume_rank()
 
                 # [3단계] 뉴스
                 with st.spinner("📰 실시간 뉴스 수집 중..."):
@@ -349,10 +379,8 @@ else:
                     손익   = 총평가 - 총매입
                     손익률 = ((현재가 - 평단가) / 평단가) * 100
                     sign   = "▲" if 손익률 > 0 else "▼"
-
                     ind = calc_indicators(종목명)
                     ind_str = f"RSI {ind['rsi']} | MACD {ind['macd']} | BB {ind['bb']}" if ind else "지표 계산 불가"
-
                     portfolio_lines.append(
                         f"- {종목명}: 현재가 {현재가:,.0f}원 | 평단 {평단가:,.0f}원 | "
                         f"{sign}{abs(손익률):.1f}% | 평가손익 {손익:+,.0f}원\n"
@@ -367,7 +395,6 @@ else:
                 with st.spinner("🤖 AI 추천 종목 선정 중..."):
                     prompt_ticker = f"""
 당신은 대한민국 주식시장에서 30년 이상 활동한 최고 수익률의 전문 트레이더입니다.
-기술적 분석과 기본적 분석, 수급 분석을 모두 마스터했습니다.
 
 [현재 시장 상황]
 {market_data_str}
@@ -387,7 +414,7 @@ else:
 [보유 종목 - 절대 추천 금지]
 {my_stock_codes_str}
 
-위 수급 데이터, 거래량, 뉴스를 종합해서 다음 조건을 충족하는 종목만 추천하세요:
+위 데이터를 종합해서 조건을 충족하는 종목만 추천하세요:
 - 보유 종목과 완전히 다른 종목
 - 외국인 또는 기관 순매수가 활발한 종목 우선
 - 거래량 증가 + 뉴스 모멘텀이 있는 종목
@@ -395,9 +422,9 @@ else:
 
 아래 JSON 형식으로만 출력하세요. 다른 말은 절대 하지 마세요:
 [
-  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유 (수급+뉴스+모멘텀 포함)"}},
-  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유 (수급+뉴스+모멘텀 포함)"}},
-  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유 (수급+뉴스+모멘텀 포함)"}}
+  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유"}},
+  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유"}},
+  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유"}}
 ]
 """
                     response_ticker = generate_with_retry(model, prompt_ticker)
@@ -498,25 +525,35 @@ else:
                     response = generate_with_retry(model, prompt)
                     result_text = response.text
 
-                # [8단계] 결과 출력
-                st.markdown("### 📊 시장 현황")
-                for line in market_lines:
-                    st.markdown(f"- {line}")
-
-                st.markdown("---")
-                st.markdown("### 💹 주요 종목 수급")
-                st.markdown(foreign_str)
-
-                st.markdown("### 🔥 주요 종목 거래량")
-                st.markdown(volume_str)
-
-                st.markdown("---")
-                with st.expander("📰 수집된 실시간 뉴스"):
-                    st.markdown(news_str)
-
-                st.markdown("---")
-                st.markdown("### 🤖 AI 분석 결과")
-                st.markdown(result_text)
+                # ✅ 분석 결과 session_state에 저장 (백그라운드 복귀 시 유지)
+                kst = pytz.timezone('Asia/Seoul')
+                st.session_state.analysis_result = result_text
+                st.session_state.analysis_time   = datetime.now(kst).strftime("%m/%d %H:%M")
+                st.session_state.market_lines    = market_lines
+                st.session_state.foreign_str     = foreign_str
+                st.session_state.volume_str      = volume_str
+                st.session_state.news_str        = news_str
 
             except Exception as e:
                 st.error(f"❌ 오류 발생: {e}")
+
+    # ✅ 저장된 분석 결과 항상 표시 (앱 복귀 시에도 유지)
+    if st.session_state.analysis_result:
+        st.markdown(f"### 📊 시장 현황 *(분석시각: {st.session_state.analysis_time})*")
+        for line in st.session_state.market_lines:
+            st.markdown(f"- {line}")
+
+        st.markdown("---")
+        st.markdown("### 💹 주요 종목 수급")
+        st.markdown(st.session_state.foreign_str)
+
+        st.markdown("### 🔥 주요 종목 거래량")
+        st.markdown(st.session_state.volume_str)
+
+        st.markdown("---")
+        with st.expander("📰 수집된 실시간 뉴스"):
+            st.markdown(st.session_state.news_str)
+
+        st.markdown("---")
+        st.markdown("### 🤖 AI 분석 결과")
+        st.markdown(st.session_state.analysis_result)
