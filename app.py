@@ -46,64 +46,11 @@ def get_kis_token():
         return None
 
 # ==========================================
-# 2. KIS - 거래량 상위 (확실한 URL)
-# ==========================================
-def get_kis_volume_rank(token):
-    url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/volume-rank"
-    headers = {
-        "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id": "FHPST01710000",
-        "custtype": "P",
-        "Content-Type": "application/json"
-    }
-    params = {
-        "FID_COND_MRKT_DIV_CODE": "J",
-        "FID_COND_SCR_DIV_CODE": "20171",
-        "FID_INPUT_ISCD": "0000",
-        "FID_DIV_CLS_CODE": "0",
-        "FID_BLNG_CLS_CODE": "0",
-        "FID_TRGT_CLS_CODE": "111111111",
-        "FID_TRGT_EXLS_CLS_CODE": "000000",
-        "FID_INPUT_PRICE_1": "",
-        "FID_INPUT_PRICE_2": "",
-        "FID_VOL_CNT": "",
-        "FID_INPUT_DATE_1": ""
-    }
-    try:
-        res = requests.get(url, headers=headers, params=params, timeout=10)
-        st.write(f"🔍 거래량 상태코드: {res.status_code}")
-        st.write(f"🔍 거래량 응답: {res.text[:300]}")
-        data = res.json()
-        items = data.get("output", [])[:5]
-        lines = []
-        for item in items:
-            name = item.get("hts_kor_isnm", "")
-            code = item.get("mksc_shrn_iscd", "")
-            vol  = item.get("acml_vol", "0")
-            chg  = item.get("prdy_ctrt", "0")
-            sign = "▲" if float(chg) > 0 else "▼"
-            lines.append(f"- {name}({code}): 거래량 {int(vol):,}주 | {sign}{abs(float(chg)):.2f}%")
-        return "\n".join(lines) if lines else "데이터 없음"
-    except Exception as e:
-        return f"거래량 데이터 조회 실패: {e}"
-
-# ==========================================
-# 3. KIS - 외국인 순매수 (투자자별 매매동향)
+# 2. KIS - 주요 종목 수급 (개별 종목 조회로 대체)
 # ==========================================
 def get_kis_foreign_buying(token):
-    url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
-    headers = {
-        "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id": "FHKST01010900",
-        "custtype": "P",
-        "Content-Type": "application/json"
-    }
-    # 삼성전자, SK하이닉스, 현대차, POSCO홀딩스, LG에너지솔루션 수급 조회
-    stocks = [
+    # 확실히 작동하는 개별 종목 현재가+투자자 API 사용
+    major_stocks = [
         ("삼성전자", "005930"),
         ("SK하이닉스", "000660"),
         ("현대차", "005380"),
@@ -111,18 +58,23 @@ def get_kis_foreign_buying(token):
         ("LG에너지솔루션", "373220"),
     ]
     lines = []
-    for name, code in stocks:
+    for name, code in major_stocks:
         try:
+            url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
+            headers = {
+                "authorization": f"Bearer {token}",
+                "appkey": KIS_APP_KEY,
+                "appsecret": KIS_APP_SECRET,
+                "tr_id": "FHKST01010900",
+                "custtype": "P"
+            }
             params = {
                 "FID_COND_MRKT_DIV_CODE": "J",
-                "FID_INPUT_ISCD": code,
-                "FID_INPUT_DATE_1": "",
-                "FID_INPUT_DATE_2": "",
-                "FID_PERIOD_DIV_CODE": "D"
+                "FID_INPUT_ISCD": code
             }
             res = requests.get(url, headers=headers, params=params, timeout=5)
             data = res.json()
-            output = data.get("output2", [])
+            output = data.get("output", [])
             if output:
                 item = output[0]
                 frgn = item.get("frgn_ntby_qty", "0")
@@ -130,7 +82,38 @@ def get_kis_foreign_buying(token):
                 lines.append(f"- {name}({code}): 외국인 {int(frgn):+,}주 | 기관 {int(inst):+,}주")
         except:
             continue
-    return "\n".join(lines) if lines else "수급 데이터 없음"
+
+    return "\n".join(lines) if lines else "수급 데이터 없음 (장 마감 후 조회 불가)"
+
+# ==========================================
+# 3. KIS - 거래량 (yfinance로 대체)
+# ==========================================
+def get_kis_volume_rank(token):
+    # KIS 거래량 API가 불안정하여 yfinance로 주요 종목 거래량 조회
+    major_stocks = [
+        ("삼성전자", "005930.KS"),
+        ("SK하이닉스", "000660.KS"),
+        ("현대차", "005380.KS"),
+        ("카카오", "035720.KS"),
+        ("NAVER", "035420.KS"),
+    ]
+    lines = []
+    for name, code in major_stocks:
+        try:
+            data = yf.Ticker(code).history(period="2d").dropna()
+            if len(data) >= 1:
+                vol  = int(data["Volume"].iloc[-1])
+                curr = data["Close"].iloc[-1]
+                if len(data) >= 2:
+                    prev = data["Close"].iloc[-2]
+                    chg  = ((curr - prev) / prev) * 100
+                    sign = "▲" if chg > 0 else "▼"
+                    lines.append(f"- {name}: 거래량 {vol:,}주 | {curr:,.0f}원 ({sign}{abs(chg):.2f}%)")
+                else:
+                    lines.append(f"- {name}: 거래량 {vol:,}주 | {curr:,.0f}원")
+        except:
+            continue
+    return "\n".join(lines) if lines else "거래량 데이터 없음"
 
 # ==========================================
 # 3. KIS - 거래량 상위
