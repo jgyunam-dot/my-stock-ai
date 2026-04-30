@@ -47,12 +47,7 @@ def get_kis_token():
 def get_kis_foreign_buying(token):
     major_stocks = [
         ("삼성전자", "005930"),
-        ("SK하이닉스", "000660"),
-        ("현대차", "005380"),
-        ("POSCO홀딩스", "005490"),
-        ("LG에너지솔루션", "373220"),
     ]
-    lines = []
     for name, code in major_stocks:
         try:
             url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
@@ -68,16 +63,11 @@ def get_kis_foreign_buying(token):
                 "FID_INPUT_ISCD": code
             }
             res = requests.get(url, headers=headers, params=params, timeout=5)
-            data = res.json()
-            output = data.get("output", [])
-            if output:
-                item = output[0]
-                frgn = item.get("frgn_ntby_qty", "0")
-                inst  = item.get("orgn_ntby_qty", "0")
-                lines.append(f"- {name}({code}): 외국인 {int(frgn):+,}주 | 기관 {int(inst):+,}주")
-        except:
-            continue
-    return "\n".join(lines) if lines else "수급 데이터 없음 (장 마감 후 조회 불가)"
+            st.write(f"🔍 수급 상태코드: {res.status_code}")
+            st.write(f"🔍 수급 응답: {res.text[:500]}")
+        except Exception as e:
+            st.write(f"🔍 수급 에러: {e}")
+    return "디버그 중"
 
 # ==========================================
 # 3. 거래량 - yfinance로 주요 종목 조회
