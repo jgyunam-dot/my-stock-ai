@@ -49,7 +49,7 @@ def get_kis_token():
 # 2. KIS - 외국인/기관 순매수 상위
 # ==========================================
 def get_kis_foreign_buying(token):
-    url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/ranking/foreigninstitution-total"
+    url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/ranking/foreign-institution-total"  # ← URL 수정
     headers = {
         "authorization": f"Bearer {token}",
         "appkey": KIS_APP_KEY,
@@ -86,6 +86,50 @@ def get_kis_foreign_buying(token):
         return "\n".join(lines) if lines else "데이터 없음"
     except Exception as e:
         return f"수급 데이터 조회 실패: {e}"
+
+# ==========================================
+# 3. KIS - 거래량 상위
+# ==========================================
+def get_kis_volume_rank(token):
+    url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/ranking/volume-rank"  # ← URL 수정
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET,
+        "tr_id": "FHPST01710000",
+        "custtype": "P",
+        "Content-Type": "application/json"
+    }
+    params = {
+        "fid_cond_mrkt_div_code": "J",
+        "fid_cond_scr_div_code": "20171",
+        "fid_input_iscd": "0000",
+        "fid_div_cls_code": "0",
+        "fid_blng_cls_code": "0",
+        "fid_trgt_cls_code": "111111111",
+        "fid_trgt_exls_cls_code": "000000",
+        "fid_input_price_1": "",
+        "fid_input_price_2": "",
+        "fid_vol_cnt": "",
+        "fid_input_date_1": ""
+    }
+    try:
+        res = requests.get(url, headers=headers, params=params, timeout=10)
+        st.write(f"🔍 거래량 상태코드: {res.status_code}")
+        st.write(f"🔍 거래량 응답내용: {res.text[:500]}")
+        data = res.json()
+        items = data.get("output", [])[:5]
+        lines = []
+        for item in items:
+            name = item.get("hts_kor_isnm", "")
+            code = item.get("mksc_shrn_iscd", "")
+            vol  = item.get("acml_vol", "0")
+            chg  = item.get("prdy_ctrt", "0")
+            sign = "▲" if float(chg) > 0 else "▼"
+            lines.append(f"- {name}({code}): 거래량 {int(vol):,}주 | {sign}{abs(float(chg)):.2f}%")
+        return "\n".join(lines) if lines else "데이터 없음"
+    except Exception as e:
+        return f"거래량 데이터 조회 실패: {e}"
 
 # ==========================================
 # 3. KIS - 거래량 상위
