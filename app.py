@@ -46,52 +46,10 @@ def get_kis_token():
         return None
 
 # ==========================================
-# 2. KIS - 외국인/기관 순매수 상위
-# ==========================================
-def get_kis_foreign_buying(token):
-    url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/ranking/foreign-institution-total"  # ← URL 수정
-    headers = {
-        "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id": "FHPST02060000",
-        "custtype": "P",
-        "Content-Type": "application/json"
-    }
-    params = {
-        "fid_cond_mrkt_div_code": "J",
-        "fid_cond_scr_div_code": "20206",
-        "fid_input_iscd": "0000",
-        "fid_div_cls_code": "0",
-        "fid_trgt_cls_code": "0",
-        "fid_trgt_exls_cls_code": "0",
-        "fid_input_price_1": "",
-        "fid_input_price_2": "",
-        "fid_vol_cnt": "",
-        "fid_input_date_1": ""
-    }
-    try:
-        res = requests.get(url, headers=headers, params=params, timeout=10)
-        st.write(f"🔍 수급 상태코드: {res.status_code}")
-        st.write(f"🔍 수급 응답내용: {res.text[:500]}")
-        data = res.json()
-        items = data.get("output", [])[:5]
-        lines = []
-        for item in items:
-            name = item.get("hts_kor_isnm", "")
-            code = item.get("mksc_shrn_iscd", "")
-            frgn = item.get("frgn_ntby_qty", "0")
-            inst = item.get("orgn_ntby_qty", "0")
-            lines.append(f"- {name}({code}): 외국인 {int(frgn):+,}주 | 기관 {int(inst):+,}주")
-        return "\n".join(lines) if lines else "데이터 없음"
-    except Exception as e:
-        return f"수급 데이터 조회 실패: {e}"
-
-# ==========================================
-# 3. KIS - 거래량 상위
+# 2. KIS - 거래량 상위 (확실한 URL)
 # ==========================================
 def get_kis_volume_rank(token):
-    url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/ranking/volume-rank"  # ← URL 수정
+    url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/volume-rank"
     headers = {
         "authorization": f"Bearer {token}",
         "appkey": KIS_APP_KEY,
@@ -101,22 +59,22 @@ def get_kis_volume_rank(token):
         "Content-Type": "application/json"
     }
     params = {
-        "fid_cond_mrkt_div_code": "J",
-        "fid_cond_scr_div_code": "20171",
-        "fid_input_iscd": "0000",
-        "fid_div_cls_code": "0",
-        "fid_blng_cls_code": "0",
-        "fid_trgt_cls_code": "111111111",
-        "fid_trgt_exls_cls_code": "000000",
-        "fid_input_price_1": "",
-        "fid_input_price_2": "",
-        "fid_vol_cnt": "",
-        "fid_input_date_1": ""
+        "FID_COND_MRKT_DIV_CODE": "J",
+        "FID_COND_SCR_DIV_CODE": "20171",
+        "FID_INPUT_ISCD": "0000",
+        "FID_DIV_CLS_CODE": "0",
+        "FID_BLNG_CLS_CODE": "0",
+        "FID_TRGT_CLS_CODE": "111111111",
+        "FID_TRGT_EXLS_CLS_CODE": "000000",
+        "FID_INPUT_PRICE_1": "",
+        "FID_INPUT_PRICE_2": "",
+        "FID_VOL_CNT": "",
+        "FID_INPUT_DATE_1": ""
     }
     try:
         res = requests.get(url, headers=headers, params=params, timeout=10)
         st.write(f"🔍 거래량 상태코드: {res.status_code}")
-        st.write(f"🔍 거래량 응답내용: {res.text[:500]}")
+        st.write(f"🔍 거래량 응답: {res.text[:300]}")
         data = res.json()
         items = data.get("output", [])[:5]
         lines = []
@@ -130,6 +88,49 @@ def get_kis_volume_rank(token):
         return "\n".join(lines) if lines else "데이터 없음"
     except Exception as e:
         return f"거래량 데이터 조회 실패: {e}"
+
+# ==========================================
+# 3. KIS - 외국인 순매수 (투자자별 매매동향)
+# ==========================================
+def get_kis_foreign_buying(token):
+    url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET,
+        "tr_id": "FHKST01010900",
+        "custtype": "P",
+        "Content-Type": "application/json"
+    }
+    # 삼성전자, SK하이닉스, 현대차, POSCO홀딩스, LG에너지솔루션 수급 조회
+    stocks = [
+        ("삼성전자", "005930"),
+        ("SK하이닉스", "000660"),
+        ("현대차", "005380"),
+        ("POSCO홀딩스", "005490"),
+        ("LG에너지솔루션", "373220"),
+    ]
+    lines = []
+    for name, code in stocks:
+        try:
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": code,
+                "FID_INPUT_DATE_1": "",
+                "FID_INPUT_DATE_2": "",
+                "FID_PERIOD_DIV_CODE": "D"
+            }
+            res = requests.get(url, headers=headers, params=params, timeout=5)
+            data = res.json()
+            output = data.get("output2", [])
+            if output:
+                item = output[0]
+                frgn = item.get("frgn_ntby_qty", "0")
+                inst  = item.get("orgn_ntby_qty", "0")
+                lines.append(f"- {name}({code}): 외국인 {int(frgn):+,}주 | 기관 {int(inst):+,}주")
+        except:
+            continue
+    return "\n".join(lines) if lines else "수급 데이터 없음"
 
 # ==========================================
 # 3. KIS - 거래량 상위
