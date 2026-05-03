@@ -267,12 +267,11 @@ def generate_with_retry(model, prompt, max_retries=3):
 # ==========================================
 st.set_page_config(page_title="AI 주식 비서 PRO", page_icon="📈", layout="centered")
 
-# session_state 초기화
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
-if 'analysis_result' not in st.session_state:  # ← 분석 결과 저장용
+if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = None
-if 'analysis_time' not in st.session_state:    # ← 분석 시각 저장용
+if 'analysis_time' not in st.session_state:
     st.session_state.analysis_time = None
 if 'market_lines' not in st.session_state:
     st.session_state.market_lines = None
@@ -358,35 +357,58 @@ else:
                 with st.spinner("📰 실시간 뉴스 수집 중..."):
                     news_str = get_stock_news()
 
-                # [4단계] 포트폴리오 현재가 + 기술지표
+                # ==========================================
+                # [4단계] 포트폴리오 현재가 + 기술지표 ← 수정됨
+                # ==========================================
                 portfolio = st.session_state.portfolio.copy()
                 portfolio_lines = []
-                my_stock_codes = portfolio["종목명"].astype(str).str.strip().tolist()
-                my_stock_codes_str = ", ".join(my_stock_codes) if my_stock_codes else "없음"
+                my_stock_codes = []
 
                 for _, row in portfolio.iterrows():
-                    종목명 = str(row["종목명"]).strip()
-                    수량   = float(row["보유수량"])
-                    평단가 = float(row["평단가"])
                     try:
-                        info = yf.Ticker(종목명).history(period="5d").dropna()
-                        현재가 = info["Close"].iloc[-1] if not info.empty else 평단가
-                    except:
-                        현재가 = 평단가
+                        종목명 = str(row["종목명"]).strip()
+                        수량_raw = row["보유수량"]
+                        평단가_raw = row["평단가"]
 
-                    총매입 = 평단가 * 수량
-                    총평가 = 현재가 * 수량
-                    손익   = 총평가 - 총매입
-                    손익률 = ((현재가 - 평단가) / 평단가) * 100
-                    sign   = "▲" if 손익률 > 0 else "▼"
-                    ind = calc_indicators(종목명)
-                    ind_str = f"RSI {ind['rsi']} | MACD {ind['macd']} | BB {ind['bb']}" if ind else "지표 계산 불가"
-                    portfolio_lines.append(
-                        f"- {종목명}: 현재가 {현재가:,.0f}원 | 평단 {평단가:,.0f}원 | "
-                        f"{sign}{abs(손익률):.1f}% | 평가손익 {손익:+,.0f}원\n"
-                        f"  기술지표: {ind_str}"
-                    )
+                        # ← NaN 또는 빈 값 건너뜀
+                        if pd.isna(수량_raw) or pd.isna(평단가_raw):
+                            continue
+                        if 종목명 == "" or 종목명 == "nan":
+                            continue
+
+                        수량   = float(수량_raw)
+                        평단가 = float(평단가_raw)
+
+                        if 수량 <= 0 or 평단가 <= 0:
+                            continue
+
+                        my_stock_codes.append(종목명)
+
+                        try:
+                            info = yf.Ticker(종목명).history(period="5d").dropna()
+                            현재가 = float(info["Close"].iloc[-1]) if not info.empty else 평단가
+                        except:
+                            현재가 = 평단가
+
+                        총매입 = 평단가 * 수량
+                        총평가 = 현재가 * 수량
+                        손익   = 총평가 - 총매입
+                        손익률 = ((현재가 - 평단가) / 평단가) * 100
+                        sign   = "▲" if 손익률 > 0 else "▼"
+
+                        ind = calc_indicators(종목명)
+                        ind_str = f"RSI {ind['rsi']} | MACD {ind['macd']} | BB {ind['bb']}" if ind else "지표 계산 불가"
+
+                        portfolio_lines.append(
+                            f"- {종목명}: 현재가 {현재가:,.0f}원 | 평단 {평단가:,.0f}원 | "
+                            f"{sign}{abs(손익률):.1f}% | 평가손익 {손익:+,.0f}원\n"
+                            f"  기술지표: {ind_str}"
+                        )
+                    except:
+                        continue  # ← 오류 행은 건너뜀
+
                 my_portfolio_str = "\n".join(portfolio_lines) if portfolio_lines else "포트폴리오 없음"
+                my_stock_codes_str = ", ".join(my_stock_codes) if my_stock_codes else "없음"
 
                 # [5단계] AI 추천 종목
                 genai.configure(api_key=MY_API_KEY)
@@ -436,7 +458,7 @@ else:
                 for item in recommend_list:
                     try:
                         info = yf.Ticker(item["code"]).history(period="5d").dropna()
-                        현재가 = info["Close"].iloc[-1] if not info.empty else None
+                        현재가 = float(info["Close"].iloc[-1]) if not info.empty else None
                         if 현재가:
                             매수가  = 현재가 * 0.97
                             목표가1 = 현재가 * 1.10
@@ -525,7 +547,7 @@ else:
                     response = generate_with_retry(model, prompt)
                     result_text = response.text
 
-                # ✅ 분석 결과 session_state에 저장 (백그라운드 복귀 시 유지)
+                # 분석 결과 session_state에 저장
                 kst = pytz.timezone('Asia/Seoul')
                 st.session_state.analysis_result = result_text
                 st.session_state.analysis_time   = datetime.now(kst).strftime("%m/%d %H:%M")
@@ -537,7 +559,7 @@ else:
             except Exception as e:
                 st.error(f"❌ 오류 발생: {e}")
 
-    # ✅ 저장된 분석 결과 항상 표시 (앱 복귀 시에도 유지)
+    # 저장된 분석 결과 항상 표시
     if st.session_state.analysis_result:
         st.markdown(f"### 📊 시장 현황 *(분석시각: {st.session_state.analysis_time})*")
         for line in st.session_state.market_lines:
