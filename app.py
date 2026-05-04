@@ -357,23 +357,20 @@ else:
                 with st.spinner("📰 실시간 뉴스 수집 중..."):
                     news_str = get_stock_news()
 
-                # ==========================================
-                # [4단계] 포트폴리오 현재가 + 기술지표 ← 수정됨
-                # ==========================================
+                # [4단계] 포트폴리오 현재가 + 실제종목명 + 기술지표
                 portfolio = st.session_state.portfolio.copy()
                 portfolio_lines = []
                 my_stock_codes = []
 
                 for _, row in portfolio.iterrows():
                     try:
-                        종목명 = str(row["종목명"]).strip()
-                        수량_raw = row["보유수량"]
+                        종목명코드 = str(row["종목명"]).strip()
+                        수량_raw   = row["보유수량"]
                         평단가_raw = row["평단가"]
 
-                        # ← NaN 또는 빈 값 건너뜀
                         if pd.isna(수량_raw) or pd.isna(평단가_raw):
                             continue
-                        if 종목명 == "" or 종목명 == "nan":
+                        if 종목명코드 == "" or 종목명코드 == "nan":
                             continue
 
                         수량   = float(수량_raw)
@@ -382,12 +379,18 @@ else:
                         if 수량 <= 0 or 평단가 <= 0:
                             continue
 
-                        my_stock_codes.append(종목명)
+                        my_stock_codes.append(종목명코드)
 
+                        # ✅ yfinance에서 실제 종목명 가져오기
                         try:
-                            info = yf.Ticker(종목명).history(period="5d").dropna()
-                            현재가 = float(info["Close"].iloc[-1]) if not info.empty else 평단가
+                            ticker_obj = yf.Ticker(종목명코드)
+                            info_meta  = ticker_obj.info
+                            실제종목명 = info_meta.get("longName") or \
+                                        info_meta.get("shortName") or 종목명코드
+                            hist = ticker_obj.history(period="5d").dropna()
+                            현재가 = float(hist["Close"].iloc[-1]) if not hist.empty else 평단가
                         except:
+                            실제종목명 = 종목명코드
                             현재가 = 평단가
 
                         총매입 = 평단가 * 수량
@@ -396,16 +399,16 @@ else:
                         손익률 = ((현재가 - 평단가) / 평단가) * 100
                         sign   = "▲" if 손익률 > 0 else "▼"
 
-                        ind = calc_indicators(종목명)
+                        ind = calc_indicators(종목명코드)
                         ind_str = f"RSI {ind['rsi']} | MACD {ind['macd']} | BB {ind['bb']}" if ind else "지표 계산 불가"
 
                         portfolio_lines.append(
-                            f"- {종목명}: 현재가 {현재가:,.0f}원 | 평단 {평단가:,.0f}원 | "
+                            f"- {실제종목명}({종목명코드}): 현재가 {현재가:,.0f}원 | 평단 {평단가:,.0f}원 | "
                             f"{sign}{abs(손익률):.1f}% | 평가손익 {손익:+,.0f}원\n"
                             f"  기술지표: {ind_str}"
                         )
                     except:
-                        continue  # ← 오류 행은 건너뜀
+                        continue
 
                 my_portfolio_str = "\n".join(portfolio_lines) if portfolio_lines else "포트폴리오 없음"
                 my_stock_codes_str = ", ".join(my_stock_codes) if my_stock_codes else "없음"
@@ -457,8 +460,13 @@ else:
                 recommend_lines = []
                 for item in recommend_list:
                     try:
-                        info = yf.Ticker(item["code"]).history(period="5d").dropna()
-                        현재가 = float(info["Close"].iloc[-1]) if not info.empty else None
+                        ticker_obj = yf.Ticker(item["code"])
+                        info_meta  = ticker_obj.info
+                        실제종목명 = info_meta.get("longName") or \
+                                    info_meta.get("shortName") or item["name"]
+                        hist = ticker_obj.history(period="5d").dropna()
+                        현재가 = float(hist["Close"].iloc[-1]) if not hist.empty else None
+
                         if 현재가:
                             매수가  = 현재가 * 0.97
                             목표가1 = 현재가 * 1.10
@@ -467,7 +475,7 @@ else:
                             ind = calc_indicators(item["code"])
                             ind_str = f"RSI {ind['rsi']} | MACD {ind['macd']} | BB {ind['bb']}" if ind else "지표 계산 불가"
                             recommend_lines.append(
-                                f"- {item['name']} ({item['code']})\n"
+                                f"- {실제종목명}({item['code']})\n"
                                 f"  현재가: {현재가:,.0f}원\n"
                                 f"  기술지표: {ind_str}\n"
                                 f"  추천이유: {item['reason']}\n"
@@ -516,7 +524,7 @@ else:
 
 1. 📊 내 종목 진단
 각 종목마다:
-- 종목명
+- 종목명 (코드)
 - 현재 상태 (수익/손실 %)
 - 기술지표 해석 (RSI 과매수/과매도, MACD 방향, BB 위치)
 - 진단: 유지 / 추가매수 / 일부매도 / 전량매도
