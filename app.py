@@ -70,13 +70,11 @@ def get_kis_foreign_buying(token):
             res = requests.get(url, headers=headers, params=params, timeout=5)
             data = res.json()
             output = data.get("output", [])
-
             item = None
             for o in output:
                 if o.get("frgn_ntby_qty", "") != "":
                     item = o
                     break
-
             if item:
                 frgn = item.get("frgn_ntby_qty", "0")
                 inst = item.get("orgn_ntby_qty", "0")
@@ -162,9 +160,13 @@ def load_github_json():
         repo = g.get_repo(REPO_NAME)
         file_content = repo.get_contents(FILE_PATH)
         data = json.loads(file_content.decoded_content.decode())
-        return pd.DataFrame(data)
+        df = pd.DataFrame(data)
+        # 별칭 컬럼 없으면 자동 추가
+        if "별칭" not in df.columns:
+            df["별칭"] = ""
+        return df
     except:
-        return pd.DataFrame(columns=["종목명", "보유수량", "평단가"])
+        return pd.DataFrame(columns=["종목명", "보유수량", "평단가", "별칭"])
 
 def save_github_json(df):
     try:
@@ -306,9 +308,15 @@ else:
             num_rows="dynamic",
             use_container_width=True,
             key="portfolio_editor",
-            on_change=auto_save
+            on_change=auto_save,
+            column_config={
+                "종목명": st.column_config.TextColumn("종목코드", help="예: 005930.KS"),
+                "보유수량": st.column_config.NumberColumn("보유수량", min_value=0),
+                "평단가": st.column_config.NumberColumn("평단가(원)", min_value=0),
+                "별칭": st.column_config.TextColumn("한글명", help="예: 삼성전자우"),
+            }
         )
-        st.caption("✏️ 수정 후 자동 저장됩니다")
+        st.caption("✏️ 한글명 입력 시 AI 분석에 해당 이름으로 표시됩니다")
 
     st.markdown("---")
 
@@ -357,7 +365,7 @@ else:
                 with st.spinner("📰 실시간 뉴스 수집 중..."):
                     news_str = get_stock_news()
 
-                # [4단계] 포트폴리오 현재가 + 실제종목명 + 기술지표
+                # [4단계] 포트폴리오 현재가 + 별칭 + 기술지표
                 portfolio = st.session_state.portfolio.copy()
                 portfolio_lines = []
                 my_stock_codes = []
@@ -381,17 +389,26 @@ else:
 
                         my_stock_codes.append(종목명코드)
 
-                        # ✅ yfinance에서 실제 종목명 가져오기
-                        try:
-                            ticker_obj = yf.Ticker(종목명코드)
-                            info_meta  = ticker_obj.info
-                            실제종목명 = info_meta.get("longName") or \
-                                        info_meta.get("shortName") or 종목명코드
-                            hist = ticker_obj.history(period="5d").dropna()
-                            현재가 = float(hist["Close"].iloc[-1]) if not hist.empty else 평단가
-                        except:
-                            실제종목명 = 종목명코드
-                            현재가 = 평단가
+                        # ✅ 별칭 있으면 별칭 사용, 없으면 yfinance 영문명
+                        별칭 = str(row.get("별칭", "")).strip()
+                        if 별칭 and 별칭 != "nan" and 별칭 != "":
+                            실제종목명 = 별칭
+                            try:
+                                hist = yf.Ticker(종목명코드).history(period="5d").dropna()
+                                현재가 = float(hist["Close"].iloc[-1]) if not hist.empty else 평단가
+                            except:
+                                현재가 = 평단가
+                        else:
+                            try:
+                                ticker_obj = yf.Ticker(종목명코드)
+                                info_meta  = ticker_obj.info
+                                실제종목명 = info_meta.get("longName") or \
+                                            info_meta.get("shortName") or 종목명코드
+                                hist = ticker_obj.history(period="5d").dropna()
+                                현재가 = float(hist["Close"].iloc[-1]) if not hist.empty else 평단가
+                            except:
+                                실제종목명 = 종목명코드
+                                현재가 = 평단가
 
                         총매입 = 평단가 * 수량
                         총평가 = 현재가 * 수량
@@ -447,9 +464,9 @@ else:
 
 아래 JSON 형식으로만 출력하세요. 다른 말은 절대 하지 마세요:
 [
-  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유"}},
-  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유"}},
-  {{"name": "종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유"}}
+  {{"name": "한글종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유"}},
+  {{"name": "한글종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유"}},
+  {{"name": "한글종목명", "code": "종목코드.KS또는.KQ", "reason": "추천이유"}}
 ]
 """
                     response_ticker = generate_with_retry(model, prompt_ticker)
@@ -460,13 +477,8 @@ else:
                 recommend_lines = []
                 for item in recommend_list:
                     try:
-                        ticker_obj = yf.Ticker(item["code"])
-                        info_meta  = ticker_obj.info
-                        실제종목명 = info_meta.get("longName") or \
-                                    info_meta.get("shortName") or item["name"]
-                        hist = ticker_obj.history(period="5d").dropna()
+                        hist = yf.Ticker(item["code"]).history(period="5d").dropna()
                         현재가 = float(hist["Close"].iloc[-1]) if not hist.empty else None
-
                         if 현재가:
                             매수가  = 현재가 * 0.97
                             목표가1 = 현재가 * 1.10
@@ -475,7 +487,7 @@ else:
                             ind = calc_indicators(item["code"])
                             ind_str = f"RSI {ind['rsi']} | MACD {ind['macd']} | BB {ind['bb']}" if ind else "지표 계산 불가"
                             recommend_lines.append(
-                                f"- {실제종목명}({item['code']})\n"
+                                f"- {item['name']} ({item['code']})\n"
                                 f"  현재가: {현재가:,.0f}원\n"
                                 f"  기술지표: {ind_str}\n"
                                 f"  추천이유: {item['reason']}\n"
