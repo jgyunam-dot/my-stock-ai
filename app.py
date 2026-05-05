@@ -628,152 +628,190 @@ else:
             st.markdown(st.session_state.analysis_result)
 
     # ==========================================
-    # TAB 2: 종목 검색 분석
+# TAB 2: 종목 검색 분석
+# ==========================================
+with tab2:
+    st.markdown("### 🔍 종목 검색 상세 분석")
+    st.caption("종목코드(예: 066570) 또는 종목명(예: LG전자)으로 검색")
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        search_input = st.text_input(
+            "종목 검색",
+            placeholder="종목코드(066570) 또는 종목명(LG전자)",
+            label_visibility="collapsed"
+        )
+    with col2:
+        search_btn = st.button("🔍 분석", use_container_width=True)
+
     # ==========================================
-    with tab2:
-        st.markdown("### 🔍 종목 검색 상세 분석")
-        st.caption("종목코드를 입력하면 KIS API + AI로 상세 분석합니다")
+    # 종목명 → 코드 변환 함수 (KIS API)
+    # ==========================================
+    def search_stock_code(token, query):
+        """종목명으로 코드 검색"""
+        try:
+            url = f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/search-stock-info"
+            headers = {
+                "authorization": f"Bearer {token}",
+                "appkey": KIS_APP_KEY,
+                "appsecret": KIS_APP_SECRET,
+                "tr_id": "CTPF1002R",
+                "custtype": "P"
+            }
+            params = {
+                "PRDT_TYPE_CD": "300",
+                "PDNO": query
+            }
+            res = requests.get(url, headers=headers, params=params, timeout=5)
+            data = res.json()
+            output = data.get("output", {})
+            code = output.get("shtn_pdno", "")   # 단축코드
+            name = output.get("prdt_abrv_name", "")
+            return code.strip(), name.strip()
+        except:
+            return "", ""
 
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            search_code = st.text_input(
-                "종목코드 입력",
-                placeholder="예: 005930 (삼성전자)",
-                label_visibility="collapsed"
-            )
-        with col2:
-            search_btn = st.button("🔍 분석", use_container_width=True)
+    def find_yf_code(code):
+        """코스피/코스닥 자동 판별"""
+        # 6자리 패딩
+        code = code.zfill(6)
+        for suffix in [".KS", ".KQ"]:
+            try:
+                hist = yf.Ticker(f"{code}{suffix}").history(period="5d").dropna()
+                if not hist.empty:
+                    return f"{code}{suffix}", hist
+            except:
+                continue
+        return None, None
 
-        if search_btn and search_code:
-            code = search_code.strip().replace(".KS", "").replace(".KQ", "")
-            yf_code_ks = f"{code}.KS"
-            yf_code_kq = f"{code}.KQ"
+    if search_btn and search_input:
+        query = search_input.strip()
 
-            with st.spinner(f"📡 {code} 데이터 수집 중..."):
-                try:
-                    # yfinance로 코스피/코스닥 자동 판별
-                    hist_ks = yf.Ticker(yf_code_ks).history(period="5d").dropna()
-                    hist_kq = yf.Ticker(yf_code_kq).history(period="5d").dropna()
+        with st.spinner(f"🔍 '{query}' 검색 중..."):
+            try:
+                kis_token = get_kis_token()
+                code = ""
+                종목명 = ""
 
-                    if not hist_ks.empty:
-                        yf_code = yf_code_ks
-                        hist = hist_ks
-                    elif not hist_kq.empty:
-                        yf_code = yf_code_kq
-                        hist = hist_kq
+                # ① 한글/영문 이름으로 입력한 경우 → KIS로 코드 검색
+                if not query.replace(".", "").isdigit():
+                    if kis_token:
+                        code, 종목명 = search_stock_code(kis_token, query)
+                        if not code:
+                            st.error(f"❌ '{query}' 종목을 찾을 수 없습니다.")
+                            st.stop()
                     else:
-                        st.error("❌ 종목을 찾을 수 없습니다. 코드를 확인해주세요.")
+                        st.error("❌ KIS 토큰 발급 실패. 코드로 검색해주세요.")
                         st.stop()
+                else:
+                    # ② 숫자 코드로 입력한 경우
+                    code = query.replace(".KS", "").replace(".KQ", "").zfill(6)
 
-                    # KIS 토큰
-                    kis_token = get_kis_token()
+                # yfinance 코드 찾기
+                yf_code, hist = find_yf_code(code)
 
-                    # ① KIS 현재가 + 기본정보
-                    detail = get_kis_stock_detail(kis_token, code) if kis_token else {}
+                if yf_code is None or hist is None:
+                    st.error(f"❌ '{code}' 시세 데이터를 찾을 수 없습니다.")
+                    st.stop()
 
-                    # yfinance에서 종목명
-                    t_info  = yf.Ticker(yf_code).info
-                    종목명  = t_info.get("longName") or t_info.get("shortName") or code
+                # 종목명 없으면 yfinance에서 가져오기
+                if not 종목명:
+                    t_info = yf.Ticker(yf_code).info
+                    종목명 = t_info.get("longName") or t_info.get("shortName") or code
 
-                    현재가  = float(hist["Close"].iloc[-1])
-                    전일가  = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else 현재가
-                    등락률  = ((현재가 - 전일가) / 전일가) * 100
-                    거래량  = int(hist["Volume"].iloc[-1])
-                    고가52  = float(hist["High"].max())
-                    저가52  = float(yf.Ticker(yf_code).history(period="1y").dropna()["Low"].min())
+                현재가 = float(hist["Close"].iloc[-1])
+                전일가 = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else 현재가
+                등락률 = ((현재가 - 전일가) / 전일가) * 100
+                거래량 = int(hist["Volume"].iloc[-1])
+                고가52 = float(yf.Ticker(yf_code).history(period="1y").dropna()["High"].max())
+                저가52 = float(yf.Ticker(yf_code).history(period="1y").dropna()["Low"].min())
 
-                    # KIS 추가 정보
-                    per    = detail.get("per", "N/A")
-                    pbr    = detail.get("pbr", "N/A")
-                    시총   = detail.get("hts_avls", "N/A")
+                # KIS 상세정보
+                detail = get_kis_stock_detail(kis_token, code) if kis_token else {}
+                per  = detail.get("per", "N/A")
+                pbr  = detail.get("pbr", "N/A")
 
-                    # ② 기술적 지표
-                    ind = calc_indicators(yf_code)
+                # 기술적 지표
+                ind = calc_indicators(yf_code)
 
-                    # ③ 투자자별 매매동향 (5일)
-                    investor_data = get_kis_stock_investor(kis_token, code) if kis_token else []
-                    investor_lines = []
-                    for o in investor_data:
-                        date  = o.get("stck_bsop_date", "")
-                        dstr  = f"{date[4:6]}/{date[6:8]}" if len(date)==8 else date
-                        frgn  = o.get("frgn_ntby_qty", "0")
-                        inst  = o.get("orgn_ntby_qty", "0")
-                        prsn  = o.get("prsn_ntby_qty", "0")
-                        investor_lines.append(
-                            f"- [{dstr}] 외국인 {int(frgn):+,}주 | 기관 {int(inst):+,}주 | 개인 {int(prsn):+,}주"
-                        )
-                    investor_str = "\n".join(investor_lines) if investor_lines else "수급 데이터 없음"
+                # 투자자별 수급
+                investor_data = get_kis_stock_investor(kis_token, code) if kis_token else []
+                investor_lines = []
+                for o in investor_data:
+                    date = o.get("stck_bsop_date", "")
+                    dstr = f"{date[4:6]}/{date[6:8]}" if len(date) == 8 else date
+                    frgn = o.get("frgn_ntby_qty", "0")
+                    inst = o.get("orgn_ntby_qty", "0")
+                    prsn = o.get("prsn_ntby_qty", "0")
+                    investor_lines.append(
+                        f"- [{dstr}] 외국인 {int(frgn):+,}주 | 기관 {int(inst):+,}주 | 개인 {int(prsn):+,}주"
+                    )
+                investor_str = "\n".join(investor_lines) if investor_lines else "수급 데이터 없음"
 
-                    # ④ 종목 관련 뉴스
-                    stock_news = get_kis_stock_news(kis_token, code)
+                # 종목 관련 뉴스
+                stock_news = get_kis_stock_news(kis_token, code)
 
-                    # ===== 화면 출력 =====
-                    sign = "▲" if 등락률 > 0 else "▼"
-                    st.markdown(f"## 📈 {종목명} ({yf_code})")
+                # ===== 화면 출력 =====
+                sign = "▲" if 등락률 > 0 else "▼"
+                color = "🔴" if 등락률 < 0 else "🟢"
+                st.markdown(f"## {color} {종목명} ({yf_code})")
 
-                    col_a, col_b, col_c = st.columns(3)
-                    with col_a:
-                        st.metric("현재가", f"{현재가:,.0f}원", f"{sign}{abs(등락률):.2f}%")
-                    with col_b:
-                        st.metric("거래량", f"{거래량:,}주")
-                    with col_c:
-                        st.metric("52주 최고", f"{고가52:,.0f}원")
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    st.metric("현재가", f"{현재가:,.0f}원", f"{sign}{abs(등락률):.2f}%")
+                with col_b:
+                    st.metric("거래량", f"{거래량:,}주")
+                with col_c:
+                    st.metric("52주 최고", f"{고가52:,.0f}원")
 
-                    st.markdown("---")
+                st.markdown("---")
+                st.markdown("#### 📋 기본 정보")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.markdown(f"**PER:** {per}")
+                with col2:
+                    st.markdown(f"**PBR:** {pbr}")
+                with col3:
+                    st.markdown(f"**52주 저가:** {저가52:,.0f}원")
 
-                    # 기본 정보
-                    st.markdown("#### 📋 기본 정보")
-                    col1, col2, col3 = st.columns(3)
+                if ind:
+                    st.markdown("#### 📊 기술적 지표")
+                    col1, col2, col3, col4 = st.columns(4)
                     with col1:
-                        st.markdown(f"**PER:** {per}")
+                        rsi_color = "🔴" if ind['rsi'] >= 70 else "🟢" if ind['rsi'] <= 30 else "🟡"
+                        st.markdown(f"**RSI**\n{rsi_color} {ind['rsi']}")
                     with col2:
-                        st.markdown(f"**PBR:** {pbr}")
+                        st.markdown(f"**MACD**\n{ind['macd']}")
                     with col3:
-                        st.markdown(f"**52주 저가:** {저가52:,.0f}원")
+                        st.markdown(f"**볼린저밴드**\n{ind['bb']}")
+                    with col4:
+                        stoch_color = "🔴" if ind['stoch_k'] >= 80 else "🟢" if ind['stoch_k'] <= 20 else "🟡"
+                        st.markdown(f"**스토캐스틱**\n{stoch_color} {ind['stoch_k']}")
+                    st.markdown(
+                        f"📉 이동평균: MA5 {ind['ma5']:,.0f} | MA20 {ind['ma20']:,.0f}" +
+                        (f" | MA60 {ind['ma60']:,.0f}" if ind['ma60'] else "")
+                    )
 
-                    # 기술적 지표
-                    if ind:
-                        st.markdown("#### 📊 기술적 지표")
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            rsi_color = "🔴" if ind['rsi'] >= 70 else "🟢" if ind['rsi'] <= 30 else "🟡"
-                            st.markdown(f"**RSI**\n{rsi_color} {ind['rsi']}")
-                        with col2:
-                            st.markdown(f"**MACD**\n{ind['macd']}")
-                        with col3:
-                            st.markdown(f"**볼린저밴드**\n{ind['bb']}")
-                        with col4:
-                            stoch_color = "🔴" if ind['stoch_k'] >= 80 else "🟢" if ind['stoch_k'] <= 20 else "🟡"
-                            st.markdown(f"**스토캐스틱**\n{stoch_color} {ind['stoch_k']}")
+                st.markdown("#### 👥 투자자별 매매동향 (최근 5일)")
+                st.markdown(investor_str)
 
-                        st.markdown(f"📉 이동평균: MA5 {ind['ma5']:,.0f} | MA20 {ind['ma20']:,.0f}" +
-                                   (f" | MA60 {ind['ma60']:,.0f}" if ind['ma60'] else ""))
+                with st.expander("📰 관련 뉴스"):
+                    st.markdown(stock_news)
 
-                    # 투자자별 수급
-                    st.markdown("#### 👥 투자자별 매매동향 (최근 5일)")
-                    st.markdown(investor_str)
-
-                    # 관련 뉴스
-                    with st.expander("📰 관련 뉴스"):
-                        st.markdown(stock_news)
-
-                    # AI 분석
-                    st.markdown("---")
-                    if st.button("🤖 AI 종합 분석 시작", use_container_width=True, key="search_ai_btn"):
-                        with st.spinner("🤖 AI 분석 중..."):
-                            ind_full = f"""
+                st.markdown("---")
+                if st.button("🤖 AI 종합 분석 시작", use_container_width=True, key="search_ai_btn"):
+                    with st.spinner("🤖 AI 분석 중..."):
+                        ind_full = f"""
 RSI: {ind['rsi']} ({'과매수' if ind['rsi']>=70 else '과매도' if ind['rsi']<=30 else '중립'})
 MACD: {ind['macd']} (MACD {ind['macd_val']}, Signal {ind['signal_val']})
 볼린저밴드: {ind['bb']} (상단 {ind['bb_upper']:,.0f} / 하단 {ind['bb_lower']:,.0f})
 스토캐스틱: {ind['stoch_k']} ({'과매수' if ind['stoch_k']>=80 else '과매도' if ind['stoch_k']<=20 else '중립'})
 이동평균: MA5 {ind['ma5']:,.0f} / MA20 {ind['ma20']:,.0f}""" if ind else "지표 계산 불가"
 
-                            genai.configure(api_key=MY_API_KEY)
-                            model = genai.GenerativeModel('gemini-2.5-flash')
-                            prompt_search = f"""
+                        genai.configure(api_key=MY_API_KEY)
+                        model = genai.GenerativeModel('gemini-2.5-flash')
+                        prompt_search = f"""
 당신은 대한민국 주식시장에서 30년 이상 활동한 최고 수익률의 전문 트레이더입니다.
-기술적 분석(RSI, MACD, 볼린저밴드, 스토캐스틱, 이동평균), 기본적 분석(PER, PBR),
-외국인/기관 수급 분석까지 모두 활용합니다.
 
 [분석 종목]
 종목명: {종목명} ({yf_code})
@@ -785,7 +823,7 @@ PER: {per} / PBR: {pbr}
 [기술적 지표]
 {ind_full}
 
-[투자자별 매매동향 (최근 5일)]
+[투자자별 매매동향 최근 5일]
 {investor_str}
 
 [관련 뉴스]
@@ -794,7 +832,7 @@ PER: {per} / PBR: {pbr}
 [시장 상황]
 {market_context}
 
-아래 형식으로 모바일에서 읽기 편하게 상세 분석해주세요:
+아래 형식으로 모바일에서 읽기 편하게 분석해주세요:
 
 1. 📊 종합 진단
 - 현재 주가 위치 분석
@@ -803,20 +841,19 @@ PER: {per} / PBR: {pbr}
 - 뉴스/이슈 영향
 
 2. 📈 매매 전략
-- 진단: 매수 / 관망 / 매도 중 하나
-- 매수 적정가: 구체적 가격
+- 진단: 매수 / 관망 / 매도
+- 매수 적정가
 - 1차 목표가 / 2차 목표가
 - 손절가
 - 투자 기간: 단기/중기/장기
 
 3. ⚠️ 리스크 요인
-- 주의해야 할 리스크 2~3가지
 
 4. 💬 전문가 한마디
 """
-                            response = generate_with_retry(model, prompt_search)
-                            st.markdown("### 🤖 AI 종합 분석")
-                            st.markdown(response.text)
+                        response = generate_with_retry(model, prompt_search)
+                        st.markdown("### 🤖 AI 종합 분석")
+                        st.markdown(response.text)
 
-                except Exception as e:
-                    st.error(f"❌ 오류 발생: {e}")
+            except Exception as e:
+                st.error(f"❌ 오류 발생: {e}")
