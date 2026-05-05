@@ -26,7 +26,92 @@ def get_portfolio_file(username):
     return f"portfolio_{username}.json"
 
 # ==========================================
-# 1. KIS 토큰 발급
+# 1. yfinance 캐싱 함수
+# ==========================================
+@st.cache_data(ttl=60)
+def get_ticker_history(code, period="3mo"):
+    try:
+        time.sleep(0.3)
+        return yf.Ticker(code).history(period=period).dropna()
+    except:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=60)
+def get_ticker_info(code):
+    try:
+        time.sleep(0.3)
+        return yf.Ticker(code).info
+    except:
+        return {}
+
+# ==========================================
+# 2. yfinance 코드 자동 판별
+# ==========================================
+def find_yf_code(code):
+    code = code.zfill(6)
+    for suffix in [".KS", ".KQ"]:
+        hist = get_ticker_history(f"{code}{suffix}", "6mo")
+        if not hist.empty:
+            return f"{code}{suffix}", hist
+    return None, None
+
+# ==========================================
+# 3. 기술적 지표 (hist 재사용)
+# ==========================================
+def calc_indicators_from_hist(hist):
+    try:
+        data = hist.copy()
+        if len(data) < 26:
+            return None
+        close = data["Close"]
+        high  = data["High"]
+        low   = data["Low"]
+
+        delta = close.diff()
+        gain  = delta.clip(lower=0).rolling(14).mean()
+        loss  = (-delta.clip(upper=0)).rolling(14).mean()
+        rsi   = round((100 - (100 / (1 + gain/loss))).iloc[-1], 1)
+
+        ema12  = close.ewm(span=12).mean()
+        ema26  = close.ewm(span=26).mean()
+        macd   = ema12 - ema26
+        signal = macd.ewm(span=9).mean()
+        macd_cross = "골든크로스 ▲" if macd.iloc[-1] > signal.iloc[-1] else "데드크로스 ▼"
+
+        ma20     = close.rolling(20).mean()
+        std20    = close.rolling(20).std()
+        upper    = ma20 + 2 * std20
+        lower_bb = ma20 - 2 * std20
+        bb_pos   = "상단 근접" if close.iloc[-1] > upper.iloc[-1] * 0.98 else \
+                   "하단 근접" if close.iloc[-1] < lower_bb.iloc[-1] * 1.02 else "중간"
+
+        lowest  = low.rolling(14).min()
+        highest = high.rolling(14).max()
+        stoch_k = round(((close - lowest) / (highest - lowest) * 100).iloc[-1], 1)
+
+        ma5   = round(close.rolling(5).mean().iloc[-1], 0)
+        ma20v = round(ma20.iloc[-1], 0)
+        ma60  = round(close.rolling(60).mean().iloc[-1], 0) if len(data) >= 60 else None
+
+        return {
+            "rsi": rsi, "macd": macd_cross,
+            "macd_val": round(macd.iloc[-1], 2),
+            "signal_val": round(signal.iloc[-1], 2),
+            "bb": bb_pos,
+            "bb_upper": round(upper.iloc[-1], 0),
+            "bb_lower": round(lower_bb.iloc[-1], 0),
+            "stoch_k": stoch_k,
+            "ma5": ma5, "ma20": ma20v, "ma60": ma60,
+        }
+    except:
+        return None
+
+def calc_indicators(ticker_code):
+    hist = get_ticker_history(ticker_code, "3mo")
+    return calc_indicators_from_hist(hist)
+
+# ==========================================
+# 4. KIS 토큰 발급
 # ==========================================
 def get_kis_token():
     url = f"{KIS_BASE_URL}/oauth2/tokenP"
@@ -42,7 +127,7 @@ def get_kis_token():
         return None
 
 # ==========================================
-# 2. KIS - 종목명으로 코드 검색
+# 5. KIS - 종목명으로 코드 검색
 # ==========================================
 def search_stock_code(token, query):
     try:
@@ -64,7 +149,7 @@ def search_stock_code(token, query):
         return "", ""
 
 # ==========================================
-# 3. KIS - 종목 현재가 상세
+# 6. KIS - 종목 현재가 상세
 # ==========================================
 def get_kis_stock_detail(token, code):
     try:
@@ -83,7 +168,7 @@ def get_kis_stock_detail(token, code):
         return {}
 
 # ==========================================
-# 4. KIS - 투자자별 매매동향
+# 7. KIS - 투자자별 매매동향
 # ==========================================
 def get_kis_stock_investor(token, code):
     try:
@@ -103,7 +188,7 @@ def get_kis_stock_investor(token, code):
         return []
 
 # ==========================================
-# 5. KIS - 주요 종목 수급
+# 8. KIS - 주요 종목 수급
 # ==========================================
 def get_kis_foreign_buying(token):
     major_stocks = [
@@ -137,7 +222,7 @@ def get_kis_foreign_buying(token):
     return "\n".join(lines) if lines else "수급 데이터 없음"
 
 # ==========================================
-# 6. 거래량 - yfinance
+# 9. 거래량 - yfinance (캐싱 적용)
 # ==========================================
 def get_volume_rank():
     major_stocks = [
@@ -147,7 +232,7 @@ def get_volume_rank():
     lines = []
     for name, code in major_stocks:
         try:
-            data = yf.Ticker(code).history(period="2d").dropna()
+            data = get_ticker_history(code, "2d")
             if len(data) >= 2:
                 vol  = int(data["Volume"].iloc[-1])
                 curr = data["Close"].iloc[-1]
@@ -160,87 +245,7 @@ def get_volume_rank():
     return "\n".join(lines) if lines else "거래량 데이터 없음"
 
 # ==========================================
-# 7. 기술적 지표
-# ==========================================
-def calc_indicators(ticker_code):
-    try:
-        data = yf.Ticker(ticker_code).history(period="3mo").dropna()
-        if len(data) < 26:
-            return None
-        close = data["Close"]
-        high  = data["High"]
-        low   = data["Low"]
-
-        delta = close.diff()
-        gain  = delta.clip(lower=0).rolling(14).mean()
-        loss  = (-delta.clip(upper=0)).rolling(14).mean()
-        rsi   = round((100 - (100 / (1 + gain/loss))).iloc[-1], 1)
-
-        ema12  = close.ewm(span=12).mean()
-        ema26  = close.ewm(span=26).mean()
-        macd   = ema12 - ema26
-        signal = macd.ewm(span=9).mean()
-        macd_cross = "골든크로스 ▲" if macd.iloc[-1] > signal.iloc[-1] else "데드크로스 ▼"
-
-        ma20     = close.rolling(20).mean()
-        std20    = close.rolling(20).std()
-        upper    = ma20 + 2 * std20
-        lower_bb = ma20 - 2 * std20
-        bb_pos   = "상단 근접" if close.iloc[-1] > upper.iloc[-1] * 0.98 else \
-                   "하단 근접" if close.iloc[-1] < lower_bb.iloc[-1] * 1.02 else "중간"
-
-        lowest  = low.rolling(14).min()
-        highest = high.rolling(14).max()
-        stoch_k = round(((close - lowest) / (highest - lowest) * 100).iloc[-1], 1)
-
-        ma5  = round(close.rolling(5).mean().iloc[-1], 0)
-        ma20v = round(ma20.iloc[-1], 0)
-        ma60 = round(close.rolling(60).mean().iloc[-1], 0) if len(data) >= 60 else None
-
-        return {
-            "rsi": rsi, "macd": macd_cross,
-            "macd_val": round(macd.iloc[-1], 2), "signal_val": round(signal.iloc[-1], 2),
-            "bb": bb_pos, "bb_upper": round(upper.iloc[-1], 0), "bb_lower": round(lower_bb.iloc[-1], 0),
-            "stoch_k": stoch_k, "ma5": ma5, "ma20": ma20v, "ma60": ma60,
-        }
-    except:
-        return None
-
-# ==========================================
-# 8. yfinance 코드 자동 판별 (KS/KQ)
-# ==========================================
-def find_yf_code(code):
-    code = code.zfill(6)
-    for suffix in [".KS", ".KQ"]:
-        try:
-            hist = yf.Ticker(f"{code}{suffix}").history(period="5d").dropna()
-            if not hist.empty:
-                return f"{code}{suffix}", hist
-        except:
-            continue
-    return None, None
-
-# ==========================================
-# 9. 종목 관련 뉴스
-# ==========================================
-def get_stock_related_news(code, name=""):
-    try:
-        query = name if name else code
-        url = f"https://news.google.com/rss/search?q={requests.utils.quote(query+' 주식')}&hl=ko&gl=KR&ceid=KR:ko"
-        res  = requests.get(url, timeout=5)
-        root = ET.fromstring(res.content)
-        news = []
-        for item in root.findall(".//item")[:5]:
-            title = item.find("title")
-            pub   = item.find("pubDate")
-            if title is not None:
-                news.append(f"- {title.text} ({pub.text[:16] if pub is not None else ''})")
-        return "\n".join(news) if news else "관련 뉴스 없음"
-    except:
-        return "뉴스 조회 실패"
-
-# ==========================================
-# 10. 시장 전체 뉴스
+# 10. 뉴스 RSS
 # ==========================================
 def get_stock_news():
     news_list = []
@@ -258,6 +263,22 @@ def get_stock_news():
         except:
             continue
     return "\n".join(news_list) if news_list else "뉴스 조회 실패"
+
+def get_stock_related_news(code, name=""):
+    try:
+        query = name if name else code
+        url = f"https://news.google.com/rss/search?q={requests.utils.quote(query+' 주식')}&hl=ko&gl=KR&ceid=KR:ko"
+        res  = requests.get(url, timeout=5)
+        root = ET.fromstring(res.content)
+        news = []
+        for item in root.findall(".//item")[:5]:
+            title = item.find("title")
+            pub   = item.find("pubDate")
+            if title is not None:
+                news.append(f"- {title.text} ({pub.text[:16] if pub is not None else ''})")
+        return "\n".join(news) if news else "관련 뉴스 없음"
+    except:
+        return "뉴스 조회 실패"
 
 # ==========================================
 # 11. 깃허브 JSON 읽기/쓰기
@@ -423,8 +444,7 @@ else:
                     market_lines = []
                     for name, ticker in tickers.items():
                         try:
-                            t = yf.Ticker(ticker)
-                            data = t.history(period="5d").dropna()
+                            data = get_ticker_history(ticker, "5d")
                             if len(data) >= 2:
                                 prev = data["Close"].iloc[-2]
                                 curr = data["Close"].iloc[-1]
@@ -465,16 +485,14 @@ else:
                             my_stock_codes.append(종목명코드)
 
                             별칭 = str(row.get("별칭", "")).strip()
+                            hist = get_ticker_history(종목명코드, "5d")
+                            현재가 = float(hist["Close"].iloc[-1]) if not hist.empty else 평단가
+
                             if 별칭 and 별칭 != "nan":
                                 실제종목명 = 별칭
-                                hist = yf.Ticker(종목명코드).history(period="5d").dropna()
-                                현재가 = float(hist["Close"].iloc[-1]) if not hist.empty else 평단가
                             else:
-                                t_obj = yf.Ticker(종목명코드)
-                                info  = t_obj.info
-                                실제종목명 = info.get("longName") or info.get("shortName") or 종목명코드
-                                hist = t_obj.history(period="5d").dropna()
-                                현재가 = float(hist["Close"].iloc[-1]) if not hist.empty else 평단가
+                                t_info = get_ticker_info(종목명코드)
+                                실제종목명 = t_info.get("longName") or t_info.get("shortName") or 종목명코드
 
                             총매입 = 평단가 * 수량
                             총평가 = 현재가 * 수량
@@ -531,14 +549,14 @@ else:
                     recommend_lines = []
                     for item in recommend_list:
                         try:
-                            hist = yf.Ticker(item["code"]).history(period="5d").dropna()
+                            hist = get_ticker_history(item["code"], "3mo")
                             현재가 = float(hist["Close"].iloc[-1]) if not hist.empty else None
                             if 현재가:
                                 매수가  = 현재가 * 0.97
                                 목표가1 = 현재가 * 1.10
                                 목표가2 = 현재가 * 1.20
                                 손절가  = 현재가 * 0.93
-                                ind = calc_indicators(item["code"])
+                                ind = calc_indicators_from_hist(hist)
                                 ind_str = f"RSI {ind['rsi']} | MACD {ind['macd']} | BB {ind['bb']} | 스토캐스틱 {ind['stoch_k']}" if ind else "지표 계산 불가"
                                 recommend_lines.append(
                                     f"- {item['name']} ({item['code']})\n"
@@ -649,7 +667,7 @@ else:
             with st.spinner(f"🔍 '{query}' 검색 중..."):
                 try:
                     kis_token = get_kis_token()
-                    code = ""
+                    code  = ""
                     종목명 = ""
 
                     # 한글/영문 이름 검색
@@ -665,7 +683,7 @@ else:
                     else:
                         code = query.replace(".KS", "").replace(".KQ", "").zfill(6)
 
-                    # KS/KQ 자동 판별
+                    # KS/KQ 자동 판별 + 6개월 데이터
                     yf_code, hist = find_yf_code(code)
                     if yf_code is None:
                         st.error(f"❌ '{code}' 시세 데이터를 찾을 수 없습니다.")
@@ -673,7 +691,7 @@ else:
 
                     # 종목명 없으면 yfinance에서
                     if not 종목명:
-                        t_info = yf.Ticker(yf_code).info
+                        t_info = get_ticker_info(yf_code)
                         종목명 = t_info.get("longName") or t_info.get("shortName") or code
 
                     현재가 = float(hist["Close"].iloc[-1])
@@ -681,16 +699,19 @@ else:
                     등락률 = ((현재가 - 전일가) / 전일가) * 100
                     거래량 = int(hist["Volume"].iloc[-1])
 
-                    hist_1y = yf.Ticker(yf_code).history(period="1y").dropna()
-                    고가52  = float(hist_1y["High"].max()) if not hist_1y.empty else 현재가
-                    저가52  = float(hist_1y["Low"].min())  if not hist_1y.empty else 현재가
+                    # 같은 hist로 52주 고저 계산
+                    고가52 = float(hist["High"].max())
+                    저가52 = float(hist["Low"].min())
 
+                    # KIS 상세정보
                     detail = get_kis_stock_detail(kis_token, code) if kis_token else {}
                     per    = detail.get("per", "N/A")
                     pbr    = detail.get("pbr", "N/A")
 
-                    ind = calc_indicators(yf_code)
+                    # 같은 hist로 기술지표 계산
+                    ind = calc_indicators_from_hist(hist)
 
+                    # 투자자별 수급
                     investor_data  = get_kis_stock_investor(kis_token, code) if kis_token else []
                     investor_lines = []
                     for o in investor_data:
@@ -703,8 +724,7 @@ else:
                             f"- [{dstr}] 외국인 {int(frgn):+,}주 | 기관 {int(inst):+,}주 | 개인 {int(prsn):+,}주"
                         )
                     investor_str = "\n".join(investor_lines) if investor_lines else "수급 데이터 없음"
-
-                    stock_news = get_stock_related_news(code, 종목명)
+                    stock_news   = get_stock_related_news(code, 종목명)
 
                     # ===== 화면 출력 =====
                     sign  = "▲" if 등락률 > 0 else "▼"
