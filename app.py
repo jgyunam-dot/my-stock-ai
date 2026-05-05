@@ -56,7 +56,7 @@ def find_yf_code(code):
     return None, None
 
 # ==========================================
-# 3. 기술적 지표 (hist 재사용)
+# 3. 기술적 지표
 # ==========================================
 def calc_indicators_from_hist(hist):
     try:
@@ -222,7 +222,7 @@ def get_kis_foreign_buying(token):
     return "\n".join(lines) if lines else "수급 데이터 없음"
 
 # ==========================================
-# 9. 거래량 - yfinance (캐싱 적용)
+# 9. 거래량 - yfinance
 # ==========================================
 def get_volume_rank():
     major_stocks = [
@@ -281,21 +281,42 @@ def get_stock_related_news(code, name=""):
         return "뉴스 조회 실패"
 
 # ==========================================
-# 11. 깃허브 JSON 읽기/쓰기
+# 11. 깃허브 JSON 읽기/쓰기 (마이그레이션 포함)
 # ==========================================
 def load_github_json(username):
     file_path = get_portfolio_file(username)
     try:
         g = Github(GITHUB_TOKEN)
         repo = g.get_repo(REPO_NAME)
-        file_content = repo.get_contents(file_path)
-        data = json.loads(file_content.decoded_content.decode())
-        df = pd.DataFrame(data)
-        if "별칭" not in df.columns:
-            df["별칭"] = ""
-        return df
+
+        # ① 유저별 파일 먼저 시도
+        try:
+            file_content = repo.get_contents(file_path)
+            data = json.loads(file_content.decoded_content.decode())
+            df = pd.DataFrame(data)
+            if "별칭" not in df.columns:
+                df["별칭"] = ""
+            return df
+        except:
+            pass
+
+        # ② 없으면 기존 portfolio.json 마이그레이션
+        try:
+            file_content = repo.get_contents("portfolio.json")
+            data = json.loads(file_content.decoded_content.decode())
+            df = pd.DataFrame(data)
+            if "별칭" not in df.columns:
+                df["별칭"] = ""
+            save_github_json(df, username)
+            st.info("✅ 기존 포트폴리오 데이터를 불러왔습니다.")
+            return df
+        except:
+            pass
+
     except:
-        return pd.DataFrame(columns=["종목명", "보유수량", "평단가", "별칭"])
+        pass
+
+    return pd.DataFrame(columns=["종목명", "보유수량", "평단가", "별칭"])
 
 def save_github_json(df, username):
     file_path = get_portfolio_file(username)
@@ -470,7 +491,7 @@ else:
                     # [4단계] 포트폴리오
                     portfolio = st.session_state.portfolio.copy()
                     portfolio_lines = []
-                    my_stock_codes = []
+                    my_stock_codes  = []
 
                     for _, row in portfolio.iterrows():
                         try:
@@ -485,10 +506,10 @@ else:
                             my_stock_codes.append(종목명코드)
 
                             별칭 = str(row.get("별칭", "")).strip()
-                            hist = get_ticker_history(종목명코드, "5d")
+                            hist = get_ticker_history(종목명코드, "3mo")
                             현재가 = float(hist["Close"].iloc[-1]) if not hist.empty else 평단가
 
-                            if 별칭 and 별칭 != "nan":
+                            if 별칭 and 별칭 not in ["nan", ""]:
                                 실제종목명 = 별칭
                             else:
                                 t_info = get_ticker_info(종목명코드)
@@ -499,7 +520,7 @@ else:
                             손익   = 총평가 - 총매입
                             손익률 = ((현재가 - 평단가) / 평단가) * 100
                             sign   = "▲" if 손익률 > 0 else "▼"
-                            ind    = calc_indicators(종목명코드)
+                            ind    = calc_indicators_from_hist(hist)
                             ind_str = f"RSI {ind['rsi']} | MACD {ind['macd']} | BB {ind['bb']} | 스토캐스틱 {ind['stoch_k']}" if ind else "지표 계산 불가"
 
                             portfolio_lines.append(
@@ -670,7 +691,6 @@ else:
                     code  = ""
                     종목명 = ""
 
-                    # 한글/영문 이름 검색
                     if not query.replace(".", "").isdigit():
                         if kis_token:
                             code, 종목명 = search_stock_code(kis_token, query)
@@ -683,13 +703,11 @@ else:
                     else:
                         code = query.replace(".KS", "").replace(".KQ", "").zfill(6)
 
-                    # KS/KQ 자동 판별 + 6개월 데이터
                     yf_code, hist = find_yf_code(code)
                     if yf_code is None:
                         st.error(f"❌ '{code}' 시세 데이터를 찾을 수 없습니다.")
                         st.stop()
 
-                    # 종목명 없으면 yfinance에서
                     if not 종목명:
                         t_info = get_ticker_info(yf_code)
                         종목명 = t_info.get("longName") or t_info.get("shortName") or code
@@ -698,20 +716,15 @@ else:
                     전일가 = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else 현재가
                     등락률 = ((현재가 - 전일가) / 전일가) * 100
                     거래량 = int(hist["Volume"].iloc[-1])
-
-                    # 같은 hist로 52주 고저 계산
                     고가52 = float(hist["High"].max())
                     저가52 = float(hist["Low"].min())
 
-                    # KIS 상세정보
                     detail = get_kis_stock_detail(kis_token, code) if kis_token else {}
                     per    = detail.get("per", "N/A")
                     pbr    = detail.get("pbr", "N/A")
 
-                    # 같은 hist로 기술지표 계산
                     ind = calc_indicators_from_hist(hist)
 
-                    # 투자자별 수급
                     investor_data  = get_kis_stock_investor(kis_token, code) if kis_token else []
                     investor_lines = []
                     for o in investor_data:
@@ -726,7 +739,6 @@ else:
                     investor_str = "\n".join(investor_lines) if investor_lines else "수급 데이터 없음"
                     stock_news   = get_stock_related_news(code, 종목명)
 
-                    # ===== 화면 출력 =====
                     sign  = "▲" if 등락률 > 0 else "▼"
                     color = "🔴" if 등락률 < 0 else "🟢"
                     st.markdown(f"## {color} {종목명} ({yf_code})")
